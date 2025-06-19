@@ -76,23 +76,76 @@ gh search prs \
     --limit 100 \
     > "$TEMP_DIR/authored.json"
 
-# 2. Fetch PRs where you submitted a formal review
+# 2. Fetch PRs where you submitted a formal review on the specific date
 echo -e "${YELLOW}  - Searching for PRs you reviewed...${NC}"
+
+# Get PRs potentially reviewed in the last 30 days
+LOOKBACK_DATE=$(date -d "${DATE} -30 days" -I 2>/dev/null || date -v-30d -I)
+
 gh search prs \
     --reviewed-by "@me" \
-    --updated ">=${DATE}" \
+    --updated ">=${LOOKBACK_DATE}" \
     --json number,title,url,repository,author \
     --limit 200 \
     > "$TEMP_DIR/reviewed_all.json"
 
-# Filter out your own PRs from reviewed list
-jq --arg user "$CURRENT_USER" '[.[] | select(.author.login != $user)]' "$TEMP_DIR/reviewed_all.json" > "$TEMP_DIR/reviewed.json"
+# Filter to only PRs where we actually submitted a review on the specific date
+echo "[]" > "$TEMP_DIR/reviewed.json"
 
-# 3. Fetch PRs where you commented (using GraphQL for better results)
+jq -c '.[]' "$TEMP_DIR/reviewed_all.json" | while read -r pr_json; do
+    pr_number=$(echo "$pr_json" | jq -r '.number')
+    repo=$(echo "$pr_json" | jq -r '.repository.nameWithOwner')
+    
+    # Check if we reviewed this PR on the specific date
+    review_data=$(gh api graphql -f query="
+    {
+      repository(owner: \"$(echo $repo | cut -d'/' -f1)\", name: \"$(echo $repo | cut -d'/' -f2)\") {
+        pullRequest(number: ${pr_number}) {
+          reviews(first: 100) {
+            nodes {
+              author {
+                login
+              }
+              createdAt
+            }
+          }
+        }
+      }
+    }" 2>/dev/null)
+    
+    if [ $? -eq 0 ]; then
+        has_review=$(echo "$review_data" | jq --arg user "$CURRENT_USER" --arg date "$DATE" '
+          .data.repository.pullRequest.reviews.nodes // [] |
+          map(select(.author.login == $user and (.createdAt | startswith($date)))) |
+          length > 0
+        ')
+        
+        if [ "$has_review" = "true" ]; then
+            # Fetch headRefName for this PR
+            headRefName=$(gh pr view "$pr_number" -R "$repo" --json headRefName -q '.headRefName' 2>/dev/null || echo "")
+            
+            # Add headRefName to the PR JSON
+            pr_with_branch=$(echo "$pr_json" | jq --arg branch "$headRefName" '. + {headRefName: $branch}')
+            
+            # Add this PR to our reviewed list
+            jq --argjson pr "$pr_with_branch" '. += [$pr]' "$TEMP_DIR/reviewed.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/reviewed.json"
+        fi
+    fi
+done
+
+# Filter out your own PRs from reviewed list
+jq --arg user "$CURRENT_USER" '[.[] | select(.author.login != $user)]' "$TEMP_DIR/reviewed.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/reviewed.json"
+
+# 3. Fetch PRs where you commented on the specific date
 echo -e "${YELLOW}  - Searching for PRs you commented on...${NC}"
+
+# First, get a list of recently active PRs where you might have commented
+# We look back 30 days to ensure we don't miss any PRs
+LOOKBACK_DATE=$(date -d "${DATE} -30 days" -I 2>/dev/null || date -v-30d -I)
+
 gh api graphql -f query="
 {
-  search(first: 100, type: ISSUE, query: \"commenter:${CURRENT_USER} updated:>=${DATE} is:pr\") {
+  search(first: 100, type: ISSUE, query: \"commenter:${CURRENT_USER} updated:>=${LOOKBACK_DATE} is:pr\") {
     nodes {
       ... on PullRequest {
         number
@@ -105,32 +158,70 @@ gh api graphql -f query="
           login
         }
         headRefName
-        reviews(first: 100) {
-          nodes {
-            author {
-              login
+      }
+    }
+  }
+}" --jq '.data.search.nodes' > "$TEMP_DIR/potential_commented.json"
+
+# Now fetch timeline items for each PR to check actual comment dates
+echo "" > "$TEMP_DIR/commented_only.json"
+echo "[]" > "$TEMP_DIR/commented_only.json"
+
+# Process each PR to check if we actually commented on the specified date
+jq -c '.[]' "$TEMP_DIR/potential_commented.json" | while read -r pr_json; do
+    pr_number=$(echo "$pr_json" | jq -r '.number')
+    repo=$(echo "$pr_json" | jq -r '.repository.nameWithOwner')
+    
+    # Fetch timeline items (comments and reviews) for this PR
+    timeline_data=$(gh api graphql -f query="
+    {
+      repository(owner: \"$(echo $repo | cut -d'/' -f1)\", name: \"$(echo $repo | cut -d'/' -f2)\") {
+        pullRequest(number: ${pr_number}) {
+          timelineItems(first: 100, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW]) {
+            nodes {
+              __typename
+              ... on IssueComment {
+                author {
+                  login
+                }
+                createdAt
+              }
+              ... on PullRequestReview {
+                author {
+                  login
+                }
+                createdAt
+              }
             }
           }
         }
       }
-    }
-  }
-}" --jq '.data.search.nodes' > "$TEMP_DIR/commented_raw.json"
+    }" 2>/dev/null)
+    
+    if [ $? -eq 0 ]; then
+        # Check if current user commented on the specific date
+        has_activity=$(echo "$timeline_data" | jq --arg user "$CURRENT_USER" --arg date "$DATE" '
+          .data.repository.pullRequest.timelineItems.nodes // [] |
+          map(select(.author.login == $user and (.createdAt | startswith($date)))) |
+          length > 0
+        ')
+        
+        if [ "$has_activity" = "true" ]; then
+            # Add to commented PRs if we haven't already reviewed it
+            reviewed=$(jq --arg num "$pr_number" --arg repo "$repo" '
+              any(.number == ($num | tonumber) and .repository.nameWithOwner == $repo)
+            ' "$TEMP_DIR/reviewed.json")
+            
+            if [ "$reviewed" = "false" ]; then
+                # Add this PR to our commented list
+                jq --argjson pr "$pr_json" '. += [$pr]' "$TEMP_DIR/commented_only.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/commented_only.json"
+            fi
+        fi
+    fi
+done
 
-# Process commented PRs to exclude authored ones and already reviewed ones
-jq --arg user "$CURRENT_USER" '
-  [.[] | 
-   select(.author.login != $user) |
-   select(.reviews.nodes | map(.author.login) | contains([$user]) | not) |
-   {
-     number: .number,
-     title: .title,
-     url: .url,
-     repository: {nameWithOwner: .repository.nameWithOwner},
-     author: {login: .author.login},
-     headRefName: .headRefName
-   }]
-' "$TEMP_DIR/commented_raw.json" > "$TEMP_DIR/commented_only.json"
+# Filter out authored PRs
+jq --arg user "$CURRENT_USER" '[.[] | select(.author.login != $user)]' "$TEMP_DIR/commented_only.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/commented_only.json"
 
 # Merge reviewed and commented PRs, removing duplicates
 jq -s '

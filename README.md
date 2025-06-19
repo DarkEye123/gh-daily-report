@@ -19,10 +19,10 @@ This tool generates a daily summary of your GitHub activities (PRs authored, rev
    ```bash
    gh auth status
    ```
-
+~`
 2. Make the script executable:
    ```bash
-   chmod +x github-daily-report.sh
+chmod +x github-daily-report.sh
    ```
 
 3. (Optional) Add an alias to your shell configuration:
