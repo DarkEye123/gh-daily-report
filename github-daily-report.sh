@@ -342,6 +342,7 @@ jq --slurpfile authored "$TEMP_DIR/authored.json" '
 process_pr() {
     local pr_json="$1"
     local pr_type="$2"
+    local format="${3:-markdown}"  # default to markdown
     
     local number=$(echo "$pr_json" | jq -r '.number')
     local title=$(echo "$pr_json" | jq -r '.title')
@@ -363,17 +364,33 @@ process_pr() {
         
         if [ -n "$linear_title" ]; then
             # Format: <linear task title>[linear task link] - <pr title>[pr link]
-            echo "${pr_type}: ${linear_title} [${ticket_id}](${linear_url}) - ${title} [PR #${number}](${url})"
+            if [ "$format" = "slack" ]; then
+                echo "${linear_title} ${ticket_id} (${linear_url}) - ${title} - PR #${number} (${url})"
+            else
+                echo "${linear_title} [${ticket_id}](${linear_url}) - ${title} [PR #${number}](${url})"
+            fi
         else
             # Fallback if we can't get Linear title
-            echo "${pr_type}: [${ticket_id}](${linear_url}) - ${title} [PR #${number}](${url})"
+            if [ "$format" = "slack" ]; then
+                echo "${ticket_id} (${linear_url}) - ${title} - PR #${number} (${url})"
+            else
+                echo "[${ticket_id}](${linear_url}) - ${title} [PR #${number}](${url})"
+            fi
         fi
     else
         # No Linear ticket
         if [ "$pr_type" = "code-review" ] && [ -n "$author" ]; then
-            echo "${pr_type}: [PR #${number}: ${title}](${url}) - ${repo} by @${author}"
+            if [ "$format" = "slack" ]; then
+                echo "PR #${number}: ${title} (${url}) - ${repo} by @${author}"
+            else
+                echo "[PR #${number}: ${title}](${url}) - ${repo} by @${author}"
+            fi
         else
-            echo "${pr_type}: [PR #${number}: ${title}](${url}) - ${repo}"
+            if [ "$format" = "slack" ]; then
+                echo "PR #${number}: ${title} (${url}) - ${repo}"
+            else
+                echo "[PR #${number}: ${title}](${url}) - ${repo}"
+            fi
         fi
     fi
 }
@@ -381,6 +398,7 @@ process_pr() {
 # Function to process a commit and format the output
 process_commit() {
     local commit_json="$1"
+    local format="${2:-markdown}"  # default to markdown
     
     local message=$(echo "$commit_json" | jq -r '.message')
     local oid=$(echo "$commit_json" | jq -r '.oid' | cut -c1-7)
@@ -401,12 +419,24 @@ process_commit() {
             local linear_title=$(get_linear_task_title "$ticket_id")
             
             if [ -n "$linear_title" ]; then
-                echo "commit: ${linear_title} [${ticket_id}](${linear_url}) - ${commit_title} [PR #${pr_number}](${pr_url})"
+                if [ "$format" = "slack" ]; then
+                    echo "${linear_title} ${ticket_id} (${linear_url}) - ${commit_title} - PR #${pr_number} (${pr_url})"
+                else
+                    echo "${linear_title} [${ticket_id}](${linear_url}) - ${commit_title} [PR #${pr_number}](${pr_url})"
+                fi
             else
-                echo "commit: [${ticket_id}](${linear_url}) - ${commit_title} [PR #${pr_number}](${pr_url})"
+                if [ "$format" = "slack" ]; then
+                    echo "${ticket_id} (${linear_url}) - ${commit_title} - PR #${pr_number} (${pr_url})"
+                else
+                    echo "[${ticket_id}](${linear_url}) - ${commit_title} [PR #${pr_number}](${pr_url})"
+                fi
             fi
         else
-            echo "commit: ${commit_title} [PR #${pr_number}](${pr_url})"
+            if [ "$format" = "slack" ]; then
+                echo "${commit_title} - PR #${pr_number} (${pr_url})"
+            else
+                echo "${commit_title} [PR #${pr_number}](${pr_url})"
+            fi
         fi
     else
         # Commit without PR
@@ -416,12 +446,20 @@ process_commit() {
             local linear_title=$(get_linear_task_title "$ticket_id")
             
             if [ -n "$linear_title" ]; then
-                echo "commit: ${linear_title} [${ticket_id}](${linear_url}) - ${commit_title} (${oid})"
+                if [ "$format" = "slack" ]; then
+                    echo "${linear_title} ${ticket_id} (${linear_url}) - ${commit_title} (${oid})"
+                else
+                    echo "${linear_title} [${ticket_id}](${linear_url}) - ${commit_title} (${oid})"
+                fi
             else
-                echo "commit: [${ticket_id}](${linear_url}) - ${commit_title} (${oid})"
+                if [ "$format" = "slack" ]; then
+                    echo "${ticket_id} (${linear_url}) - ${commit_title} (${oid})"
+                else
+                    echo "[${ticket_id}](${linear_url}) - ${commit_title} (${oid})"
+                fi
             fi
         else
-            echo "commit: ${commit_title} - ${repo} (${oid})"
+            echo "${commit_title} - ${repo} (${oid})"
         fi
     fi
 }
@@ -436,8 +474,8 @@ REPORT_SECTIONS=""
 # Process authored PRs
 authored_count=$(jq 'length' "$TEMP_DIR/authored.json")
 if [ "$authored_count" -gt 0 ]; then
-    echo -e "${BLUE}### Implementation (Authored PRs)${NC}"
-    SECTION="### Implementation (Authored PRs)\n"
+    echo -e "${BLUE}### Opened PRs${NC}"
+    SECTION="### Opened PRs\n"
     
     jq -c '.[]' "$TEMP_DIR/authored.json" | while read -r pr_json; do
         output=$(process_pr "$pr_json" "impl")
@@ -466,8 +504,8 @@ fi
 # Process commits
 commit_count=$(jq 'length' "$TEMP_DIR/commits.json")
 if [ "$commit_count" -gt 0 ]; then
-    echo -e "${BLUE}### Commits${NC}"
-    SECTION="### Commits\n"
+    echo -e "${BLUE}### Commits, Merges, Resolutions${NC}"
+    SECTION="### Commits, Merges, Resolutions\n"
     
     jq -c '.[]' "$TEMP_DIR/commits.json" | while read -r commit_json; do
         output=$(process_commit "$commit_json")
@@ -495,34 +533,30 @@ else
     # Copy to clipboard if available
     if command -v pbcopy &> /dev/null; then
         {
-            echo "## Daily GitHub Activity Summary"
-            echo "Date: ${DATE}"
-            echo
-            
             # Re-process for clean clipboard output
             if [ "$authored_count" -gt 0 ]; then
-                echo "### Implementation (Authored PRs)"
+                echo "Opened PRs:"
                 jq -c '.[]' "$TEMP_DIR/authored.json" | while read -r pr_json; do
-                    output=$(process_pr "$pr_json" "impl")
-                    echo "- $output"
+                    output=$(process_pr "$pr_json" "impl" "slack")
+                    echo "• $output"
                 done
                 echo
             fi
             
             if [ "$review_count" -gt 0 ]; then
-                echo "### Code Reviews & Comments"
+                echo "Code Reviews & Comments:"
                 jq -c '.[]' "$TEMP_DIR/all_reviews.json" | while read -r pr_json; do
-                    output=$(process_pr "$pr_json" "code-review")
-                    echo "- $output"
+                    output=$(process_pr "$pr_json" "code-review" "slack")
+                    echo "• $output"
                 done
                 echo
             fi
             
             if [ "$commit_count" -gt 0 ]; then
-                echo "### Commits"
+                echo "Commits, Merges, Resolutions:"
                 jq -c '.[]' "$TEMP_DIR/commits.json" | while read -r commit_json; do
-                    output=$(process_commit "$commit_json")
-                    echo "- $output"
+                    output=$(process_commit "$commit_json" "slack")
+                    echo "• $output"
                 done
             fi
         } | pbcopy
