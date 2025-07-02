@@ -6,6 +6,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a GitHub Daily Activity Report Generator that creates summaries of PRs authored, reviewed, and commented on, with Linear ticket integration.
 
+### Recent Major Refactoring (July 2025)
+
+The script underwent significant refactoring to add:
+1. **Deduplication Logic** - PRs mentioned in upper sections won't repeat in lower sections
+2. **Enhanced Date Handling** - Supports Slovak format (DD-MM-YYYY), "today", "yesterday" keywords
+3. **Working Day Calculations** - Defaults to previous working day, skips weekends
+4. **Comprehensive Test Suite** - With mocked GitHub API responses
+
+### Key Implementation Details
+
+#### Deduplication System
+- Uses string-based tracking (not associative arrays) for bash 3.x compatibility
+- Tracks PR numbers, URLs, and branches with delimiter-based matching
+- Cascading exclusion: Opened PRs → Code Reviews → Commits
+- Initialize tracking strings with delimiters: `SEEN_PR_NUMBERS="|"`
+
+#### Date Handling
+- Date utilities in `lib/date-utils.sh`
+- Supports formats: YYYY-MM-DD, DD-MM-YYYY, "today", "yesterday"
+- Empty input defaults to previous working day
+- Monday defaults to previous Friday
+- Robust error handling for date command failures
+
+#### Security Considerations
+- Linear ticket IDs must be validated with regex `^CHE-[0-9]+$`
+- All variables must be properly quoted
+- Error messages should not expose sensitive information
+
 ## Truthfulness Framework
 
 ### What You MUST Do:
@@ -55,6 +83,18 @@ When instructed to process feedback from a code review:
 - **Verify changes** - Ensure all feedback has been properly addressed
 - **Test thoroughly** - Run the script with various inputs to verify fixes
 
+### Self-Review Process (cloop)
+
+When the self-review process is triggered:
+- **Follow the state machine exactly** - Do not skip states or exit prematurely
+- **Loop until approval** - Continue the review cycle until BOTH code reviewer and decision helper give APPROVED verdicts
+- **Automatic progression** - After implementing fixes, automatically trigger the next review iteration without waiting for prompts
+- **State transitions**:
+  - After IMPLEMENT_SUGGESTIONS → UPDATE_ITERATION_SUMMARY → CHECK_COMPLETION
+  - If either verdict is NEEDS_REVISION → Loop back to SPAWN_CODE_REVIEW
+  - Only exit when both verdicts are APPROVED
+- **Never create summary/conclusion** until the loop completes with approvals
+
 ## Code Style Guidelines
 
 ### Shell Scripts
@@ -97,11 +137,20 @@ Examples:
 4. Plan the approach
 
 ### Testing Changes
-1. Test with different date formats
+1. Test with different date formats (YYYY-MM-DD, DD-MM-YYYY, "today", "yesterday")
 2. Test with no activity days
 3. Test with large result sets
 4. Verify clipboard functionality
 5. Check error handling
+6. Test deduplication logic - ensure PRs don't repeat across sections
+7. Test working day calculations (especially Monday → Friday)
+8. Run the test suite: `./test-github-daily-report.sh`
+
+### Compatibility Notes
+- **Bash Version**: Must work with bash 3.x (macOS default)
+- **No Associative Arrays**: Use string-based tracking instead
+- **Date Commands**: Support both GNU date (Linux) and BSD date (macOS)
+- **Variable Quoting**: Always quote variables to handle spaces and special characters
 
 ### Documentation
 - Update README.md when adding features
@@ -125,6 +174,14 @@ Examples:
 3. Verify authentication status
 4. Test with minimal examples
 5. Document findings
+
+### Common Pitfalls
+1. **Associative Arrays**: Don't use `declare -A` - it's not supported in bash 3.x
+2. **Date Parsing**: Always check return codes from date commands
+3. **String Matching**: Use delimiters to prevent substring matches (PR #12 vs #123)
+4. **Clipboard Output**: Must also implement deduplication in clipboard section
+5. **Test Execution**: Tests may hang if output isn't properly handled in subshells
+6. **Linear API**: Always validate ticket IDs to prevent GraphQL injection
 
 ## Handover Strategy
 
