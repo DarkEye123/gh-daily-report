@@ -5,6 +5,9 @@
 
 set -e
 
+# Source date utilities
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/date-utils.sh"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -15,8 +18,18 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Default to today's date
-DATE="${1:-$(date -I)}"
+# Parse date argument (default to previous working day)
+RAW_DATE="${1:-}"
+DATE=$(parse_date "$RAW_DATE")
+if [ $? -ne 0 ]; then
+    exit 1
+fi
+
+# Validate the parsed date
+if ! validate_date "$DATE"; then
+    echo -e "${RED}Error: Invalid date: $DATE${NC}" >&2
+    exit 1
+fi
 
 echo -e "${BLUE}GitHub Activity Report for ${DATE}${NC}"
 echo "================================================"
@@ -726,6 +739,7 @@ echo -e "\n${PURPLE}Tips:${NC}"
 echo -e "  • This version includes PRs where you only left comments (not formal reviews)"
 echo -e "  • Tracks commits you made on the specified date, even without PRs"
 echo -e "  • Set LINEAR_API_KEY to fetch Linear task titles"
-echo -e "  • Run without arguments for today's report: ${BLUE}./$(basename "$0")${NC}"
-echo -e "  • Specify a date: ${BLUE}./$(basename "$0") 2025-06-18${NC}"
+echo -e "  • Run without arguments for previous working day: ${BLUE}./$(basename "$0")${NC}"
+echo -e "  • Specify a date: ${BLUE}./$(basename "$0") 2025-06-18${NC} or ${BLUE}./$(basename "$0") 18-06-2025${NC}"
+echo -e "  • Use shortcuts: ${BLUE}./$(basename "$0") today${NC} or ${BLUE}./$(basename "$0") yesterday${NC}"
 echo -e "  • Add as alias: ${BLUE}alias daily-report='$(pwd)/$(basename "$0")'${NC}"
