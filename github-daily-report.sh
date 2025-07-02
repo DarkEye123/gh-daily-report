@@ -5,6 +5,7 @@
 
 set -e
 
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -51,6 +52,11 @@ extract_linear_ticket() {
 get_linear_task_title() {
     local ticket_id="$1"
     
+    # Validate ticket ID format to prevent injection
+    if ! [[ "$ticket_id" =~ ^CHE-[0-9]+$ ]]; then
+        return 1
+    fi
+    
     # Check if Linear API key is available
     if [ -z "$LINEAR_API_KEY" ]; then
         return 1
@@ -76,6 +82,45 @@ echo -e "${PURPLE}Current user: ${CURRENT_USER}${NC}"
 # Temporary directory for storing results
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
+
+# Initialize deduplication tracking arrays
+# These will store PR numbers and branches that have been seen
+# Note: Using a different approach for compatibility with older bash versions
+# Initialize with delimiters to prevent substring matching issues
+SEEN_PR_NUMBERS="|"
+SEEN_PR_URLS="|"
+SEEN_BRANCHES="|"
+
+# Helper functions for tracking seen items
+is_pr_seen() {
+    local pr_number="$1"
+    [[ "$SEEN_PR_NUMBERS" == *"|$pr_number|"* ]]
+}
+
+mark_pr_seen() {
+    local pr_number="$1"
+    SEEN_PR_NUMBERS="${SEEN_PR_NUMBERS}|$pr_number|"
+}
+
+is_url_seen() {
+    local url="$1"
+    [[ "$SEEN_PR_URLS" == *"|$url|"* ]]
+}
+
+mark_url_seen() {
+    local url="$1"
+    SEEN_PR_URLS="${SEEN_PR_URLS}|$url|"
+}
+
+is_branch_seen() {
+    local branch="$1"
+    [[ "$SEEN_BRANCHES" == *"|$branch|"* ]]
+}
+
+mark_branch_seen() {
+    local branch="$1"
+    SEEN_BRANCHES="${SEEN_BRANCHES}|$branch|"
+}
 
 echo -e "\n${YELLOW}Fetching your GitHub activity...${NC}"
 
@@ -477,11 +522,26 @@ if [ "$authored_count" -gt 0 ]; then
     echo -e "${BLUE}### Opened PRs${NC}"
     SECTION="### Opened PRs\n"
     
-    jq -c '.[]' "$TEMP_DIR/authored.json" | while read -r pr_json; do
+    # Process authored PRs without subshell to preserve variable changes
+    authored_lines=$(jq -c '.[]' "$TEMP_DIR/authored.json")
+    while IFS= read -r pr_json; do
+        [ -z "$pr_json" ] && continue
+        
+        # Track PR for deduplication
+        pr_number=$(echo "$pr_json" | jq -r '.number')
+        pr_url=$(echo "$pr_json" | jq -r '.url')
+        branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
+        
+        mark_pr_seen "$pr_number"
+        mark_url_seen "$pr_url"
+        if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+            mark_branch_seen "$branch"
+        fi
+        
         output=$(process_pr "$pr_json" "impl")
         echo "- $output"
         SECTION+="- $output\n"
-    done
+    done <<< "$authored_lines"
     echo
     REPORT_SECTIONS+="$SECTION\n"
 fi
@@ -492,11 +552,32 @@ if [ "$review_count" -gt 0 ]; then
     echo -e "${BLUE}### Code Reviews & Comments${NC}"
     SECTION="### Code Reviews & Comments\n"
     
-    jq -c '.[]' "$TEMP_DIR/all_reviews.json" | while read -r pr_json; do
+    # Process reviews without subshell to preserve variable changes
+    review_lines=$(jq -c '.[]' "$TEMP_DIR/all_reviews.json")
+    while IFS= read -r pr_json; do
+        [ -z "$pr_json" ] && continue
+        
+        # Check if this PR was already shown in authored section
+        pr_number=$(echo "$pr_json" | jq -r '.number')
+        pr_url=$(echo "$pr_json" | jq -r '.url')
+        branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
+        
+        # Skip if already shown
+        if is_pr_seen "$pr_number" || is_url_seen "$pr_url"; then
+            continue
+        fi
+        
+        # Track for next section
+        mark_pr_seen "$pr_number"
+        mark_url_seen "$pr_url"
+        if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+            mark_branch_seen "$branch"
+        fi
+        
         output=$(process_pr "$pr_json" "code-review")
         echo "- $output"
         SECTION+="- $output\n"
-    done
+    done <<< "$review_lines"
     echo
     REPORT_SECTIONS+="$SECTION\n"
 fi
@@ -507,11 +588,34 @@ if [ "$commit_count" -gt 0 ]; then
     echo -e "${BLUE}### Commits, Merges, Resolutions${NC}"
     SECTION="### Commits, Merges, Resolutions\n"
     
-    jq -c '.[]' "$TEMP_DIR/commits.json" | while read -r commit_json; do
+    # Process commits without subshell to preserve variable checks
+    commit_lines=$(jq -c '.[]' "$TEMP_DIR/commits.json")
+    while IFS= read -r commit_json; do
+        [ -z "$commit_json" ] && continue
+        
+        # Check if this commit is associated with a PR we've already shown
+        pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
+        
+        if [ -n "$pr_data" ] && [ "$pr_data" != "null" ]; then
+            pr_number=$(echo "$pr_data" | jq -r '.number')
+            pr_url=$(echo "$pr_data" | jq -r '.url')
+            branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
+            
+            # Skip if PR was already shown
+            if is_pr_seen "$pr_number" || is_url_seen "$pr_url"; then
+                continue
+            fi
+            
+            # Also skip if branch was already shown
+            if [ -n "$branch" ] && [ "$branch" != "null" ] && is_branch_seen "$branch"; then
+                continue
+            fi
+        fi
+        
         output=$(process_commit "$commit_json")
         echo "- $output"
         SECTION+="- $output\n"
-    done
+    done <<< "$commit_lines"
     echo
     REPORT_SECTIONS+="$SECTION\n"
 fi
@@ -533,10 +637,26 @@ else
     # Copy to clipboard if available
     if command -v pbcopy &> /dev/null; then
         {
+            # Reset tracking for clipboard output
+            CLIPBOARD_SEEN_PR_NUMBERS="|"
+            CLIPBOARD_SEEN_PR_URLS="|"
+            CLIPBOARD_SEEN_BRANCHES="|"
+            
             # Re-process for clean clipboard output
             if [ "$authored_count" -gt 0 ]; then
                 echo "Opened PRs:"
                 jq -c '.[]' "$TEMP_DIR/authored.json" | while read -r pr_json; do
+                    # Track PR for deduplication
+                    pr_number=$(echo "$pr_json" | jq -r '.number')
+                    pr_url=$(echo "$pr_json" | jq -r '.url')
+                    branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
+                    
+                    CLIPBOARD_SEEN_PR_NUMBERS="${CLIPBOARD_SEEN_PR_NUMBERS}|$pr_number|"
+                    CLIPBOARD_SEEN_PR_URLS="${CLIPBOARD_SEEN_PR_URLS}|$pr_url|"
+                    if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+                        CLIPBOARD_SEEN_BRANCHES="${CLIPBOARD_SEEN_BRANCHES}|$branch|"
+                    fi
+                    
                     output=$(process_pr "$pr_json" "impl" "slack")
                     echo "• $output"
                 done
@@ -546,6 +666,23 @@ else
             if [ "$review_count" -gt 0 ]; then
                 echo "Code Reviews & Comments:"
                 jq -c '.[]' "$TEMP_DIR/all_reviews.json" | while read -r pr_json; do
+                    # Check if this PR was already shown
+                    pr_number=$(echo "$pr_json" | jq -r '.number')
+                    pr_url=$(echo "$pr_json" | jq -r '.url')
+                    branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
+                    
+                    # Skip if already shown
+                    if [[ "$CLIPBOARD_SEEN_PR_NUMBERS" == *"|$pr_number|"* ]] || [[ "$CLIPBOARD_SEEN_PR_URLS" == *"|$pr_url|"* ]]; then
+                        continue
+                    fi
+                    
+                    # Track for next section
+                    CLIPBOARD_SEEN_PR_NUMBERS="${CLIPBOARD_SEEN_PR_NUMBERS}|$pr_number|"
+                    CLIPBOARD_SEEN_PR_URLS="${CLIPBOARD_SEEN_PR_URLS}|$pr_url|"
+                    if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+                        CLIPBOARD_SEEN_BRANCHES="${CLIPBOARD_SEEN_BRANCHES}|$branch|"
+                    fi
+                    
                     output=$(process_pr "$pr_json" "code-review" "slack")
                     echo "• $output"
                 done
@@ -555,6 +692,25 @@ else
             if [ "$commit_count" -gt 0 ]; then
                 echo "Commits, Merges, Resolutions:"
                 jq -c '.[]' "$TEMP_DIR/commits.json" | while read -r commit_json; do
+                    # Check if this commit is associated with a PR we've already shown
+                    pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
+                    
+                    if [ -n "$pr_data" ] && [ "$pr_data" != "null" ]; then
+                        pr_number=$(echo "$pr_data" | jq -r '.number')
+                        pr_url=$(echo "$pr_data" | jq -r '.url')
+                        branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
+                        
+                        # Skip if PR was already shown
+                        if [[ "$CLIPBOARD_SEEN_PR_NUMBERS" == *"|$pr_number|"* ]] || [[ "$CLIPBOARD_SEEN_PR_URLS" == *"|$pr_url|"* ]]; then
+                            continue
+                        fi
+                        
+                        # Also skip if branch was already shown
+                        if [ -n "$branch" ] && [ "$branch" != "null" ] && [[ "$CLIPBOARD_SEEN_BRANCHES" == *"|$branch|"* ]]; then
+                            continue
+                        fi
+                    fi
+                    
                     output=$(process_commit "$commit_json" "slack")
                     echo "• $output"
                 done
