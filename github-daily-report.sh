@@ -526,14 +526,13 @@ process_commit() {
 echo -e "\n${GREEN}## Daily GitHub Activity Summary${NC}"
 echo -e "${GREEN}Date: ${DATE}${NC}\n"
 
-# Collect all output for clipboard
-REPORT_SECTIONS=""
+# Build the report content once
+REPORT_CONTENT=""
 
 # Process authored PRs
 authored_count=$(jq 'length' "$TEMP_DIR/authored.json")
 if [ "$authored_count" -gt 0 ]; then
-    echo -e "${BLUE}### Opened PRs${NC}"
-    SECTION="### Opened PRs\n"
+    REPORT_CONTENT+="### Opened PRs\n"
     
     # Process authored PRs without subshell to preserve variable changes
     authored_lines=$(jq -c '.[]' "$TEMP_DIR/authored.json")
@@ -552,18 +551,17 @@ if [ "$authored_count" -gt 0 ]; then
         fi
         
         output=$(process_pr "$pr_json" "impl")
-        echo "- $output"
-        SECTION+="- $output\n"
+        REPORT_CONTENT+="- $output\n"
     done <<< "$authored_lines"
-    echo
-    REPORT_SECTIONS+="$SECTION\n"
+    REPORT_CONTENT+="\n"
 fi
 
 # Process reviewed/commented PRs
 review_count=$(jq 'length' "$TEMP_DIR/all_reviews.json")
 if [ "$review_count" -gt 0 ]; then
-    echo -e "${BLUE}### Code Reviews & Comments${NC}"
-    SECTION="### Code Reviews & Comments\n"
+    # Track if we actually display any reviews after deduplication
+    review_displayed=0
+    REVIEW_SECTION=""
     
     # Process reviews without subshell to preserve variable changes
     review_lines=$(jq -c '.[]' "$TEMP_DIR/all_reviews.json")
@@ -588,19 +586,24 @@ if [ "$review_count" -gt 0 ]; then
         fi
         
         output=$(process_pr "$pr_json" "code-review")
-        echo "- $output"
-        SECTION+="- $output\n"
+        REVIEW_SECTION+="- $output\n"
+        review_displayed=$((review_displayed + 1))
     done <<< "$review_lines"
-    echo
-    REPORT_SECTIONS+="$SECTION\n"
+    
+    # Only add section if we have reviews to display
+    if [ "$review_displayed" -gt 0 ]; then
+        REPORT_CONTENT+="### Code Reviews & Comments\n"
+        REPORT_CONTENT+="$REVIEW_SECTION"
+        REPORT_CONTENT+="\n"
+    fi
 fi
 
 # Process commits
 commit_count=$(jq 'length' "$TEMP_DIR/commits.json")
 if [ "$commit_count" -gt 0 ]; then
-    # First, collect all commits that will be displayed after deduplication
-    COMMITS_TO_DISPLAY=""
+    # Track if we actually display any commits after deduplication
     displayed_commits=0
+    COMMITS_SECTION=""
     
     # Process commits without subshell to preserve variable checks
     commit_lines=$(jq -c '.[]' "$TEMP_DIR/commits.json")
@@ -627,20 +630,28 @@ if [ "$commit_count" -gt 0 ]; then
         fi
         
         output=$(process_commit "$commit_json")
-        COMMITS_TO_DISPLAY+="- $output\n"
+        COMMITS_SECTION+="- $output\n"
         displayed_commits=$((displayed_commits + 1))
     done <<< "$commit_lines"
     
-    # Only show section if we have commits to display
+    # Only add section if we have commits to display
     if [ "$displayed_commits" -gt 0 ]; then
-        echo -e "${BLUE}### Commits, Merges, Resolutions${NC}"
-        echo -n -e "$COMMITS_TO_DISPLAY"
-        echo
-        
-        SECTION="### Commits, Merges, Resolutions\n"
-        SECTION+="$COMMITS_TO_DISPLAY"
-        REPORT_SECTIONS+="$SECTION\n"
+        REPORT_CONTENT+="### Commits, Merges, Resolutions\n"
+        REPORT_CONTENT+="$COMMITS_SECTION"
+        REPORT_CONTENT+="\n"
     fi
+fi
+
+# Display the report content to terminal with colors
+if [ -n "$REPORT_CONTENT" ]; then
+    # Split content by lines and colorize section headers
+    while IFS= read -r line; do
+        if [[ "$line" == "### "* ]]; then
+            echo -e "${BLUE}$line${NC}"
+        else
+            echo "$line"
+        fi
+    done <<< "${REPORT_CONTENT%$'\n'}"  # Remove trailing newline
 fi
 
 # Summary
@@ -658,120 +669,9 @@ else
     fi
     
     # Copy to clipboard if available
-    if command -v pbcopy &> /dev/null; then
-        # Build clipboard content using the same deduplication tracking as screen output
-        CLIPBOARD_CONTENT=""
-        
-        # Reset tracking for clipboard - reuse the main tracking variables
-        CLIPBOARD_SEEN_PR_NUMBERS="|"
-        CLIPBOARD_SEEN_PR_URLS="|"
-        CLIPBOARD_SEEN_BRANCHES="|"
-        
-        # Process authored PRs for clipboard
-        if [ "$authored_count" -gt 0 ]; then
-            CLIPBOARD_CONTENT+="Opened PRs:\n"
-            
-            authored_lines=$(jq -c '.[]' "$TEMP_DIR/authored.json")
-            while IFS= read -r pr_json; do
-                [ -z "$pr_json" ] && continue
-                
-                # Track PR for deduplication
-                pr_number=$(echo "$pr_json" | jq -r '.number')
-                pr_url=$(echo "$pr_json" | jq -r '.url')
-                branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
-                
-                CLIPBOARD_SEEN_PR_NUMBERS="${CLIPBOARD_SEEN_PR_NUMBERS}|$pr_number|"
-                CLIPBOARD_SEEN_PR_URLS="${CLIPBOARD_SEEN_PR_URLS}|$pr_url|"
-                if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-                    CLIPBOARD_SEEN_BRANCHES="${CLIPBOARD_SEEN_BRANCHES}|$branch|"
-                fi
-                
-                output=$(process_pr "$pr_json" "impl" "slack")
-                CLIPBOARD_CONTENT+="• $output\n"
-            done <<< "$authored_lines"
-            CLIPBOARD_CONTENT+="\n"
-        fi
-        
-        # Process reviewed/commented PRs for clipboard
-        if [ "$review_count" -gt 0 ]; then
-            review_displayed=0
-            REVIEW_SECTION=""
-            
-            review_lines=$(jq -c '.[]' "$TEMP_DIR/all_reviews.json")
-            while IFS= read -r pr_json; do
-                [ -z "$pr_json" ] && continue
-                
-                # Check if this PR was already shown
-                pr_number=$(echo "$pr_json" | jq -r '.number')
-                pr_url=$(echo "$pr_json" | jq -r '.url')
-                branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
-                
-                # Skip if already shown
-                if [[ "$CLIPBOARD_SEEN_PR_NUMBERS" == *"|$pr_number|"* ]] || [[ "$CLIPBOARD_SEEN_PR_URLS" == *"|$pr_url|"* ]]; then
-                    continue
-                fi
-                
-                # Track for next section
-                CLIPBOARD_SEEN_PR_NUMBERS="${CLIPBOARD_SEEN_PR_NUMBERS}|$pr_number|"
-                CLIPBOARD_SEEN_PR_URLS="${CLIPBOARD_SEEN_PR_URLS}|$pr_url|"
-                if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-                    CLIPBOARD_SEEN_BRANCHES="${CLIPBOARD_SEEN_BRANCHES}|$branch|"
-                fi
-                
-                output=$(process_pr "$pr_json" "code-review" "slack")
-                REVIEW_SECTION+="• $output\n"
-                review_displayed=$((review_displayed + 1))
-            done <<< "$review_lines"
-            
-            if [ "$review_displayed" -gt 0 ]; then
-                CLIPBOARD_CONTENT+="Code Reviews & Comments:\n"
-                CLIPBOARD_CONTENT+="$REVIEW_SECTION"
-                CLIPBOARD_CONTENT+="\n"
-            fi
-        fi
-        
-        # Process commits for clipboard
-        if [ "$commit_count" -gt 0 ]; then
-            commits_displayed=0
-            COMMITS_SECTION=""
-            
-            commit_lines=$(jq -c '.[]' "$TEMP_DIR/commits.json")
-            while IFS= read -r commit_json; do
-                [ -z "$commit_json" ] && continue
-                
-                # Check if this commit is associated with a PR we've already shown
-                pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
-                
-                if [ -n "$pr_data" ] && [ "$pr_data" != "null" ]; then
-                    pr_number=$(echo "$pr_data" | jq -r '.number')
-                    pr_url=$(echo "$pr_data" | jq -r '.url')
-                    branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
-                    
-                    # Skip if PR was already shown
-                    if [[ "$CLIPBOARD_SEEN_PR_NUMBERS" == *"|$pr_number|"* ]] || [[ "$CLIPBOARD_SEEN_PR_URLS" == *"|$pr_url|"* ]]; then
-                        continue
-                    fi
-                    
-                    # Also skip if branch was already shown
-                    if [ -n "$branch" ] && [ "$branch" != "null" ] && [[ "$CLIPBOARD_SEEN_BRANCHES" == *"|$branch|"* ]]; then
-                        continue
-                    fi
-                fi
-                
-                output=$(process_commit "$commit_json" "slack")
-                COMMITS_SECTION+="• $output\n"
-                commits_displayed=$((commits_displayed + 1))
-            done <<< "$commit_lines"
-            
-            if [ "$commits_displayed" -gt 0 ]; then
-                CLIPBOARD_CONTENT+="Commits, Merges, Resolutions:\n"
-                CLIPBOARD_CONTENT+="$COMMITS_SECTION"
-            fi
-        fi
-        
-        # Remove trailing newline and copy to clipboard
-        echo -n -e "${CLIPBOARD_CONTENT%\\n}" | pbcopy
-        
+    if command -v pbcopy &> /dev/null && [ -n "$REPORT_CONTENT" ]; then
+        # Copy the same content to clipboard (without colors)
+        echo -n -e "${REPORT_CONTENT%\\n}" | pbcopy
         echo -e "\n${YELLOW}✓ Report copied to clipboard!${NC}"
     fi
 fi
