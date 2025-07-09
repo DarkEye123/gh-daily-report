@@ -360,11 +360,11 @@ for repo in $GITHUB_REPOS; do
     }" 2>/dev/null)
     
     if [ $? -eq 0 ]; then
-        # Filter commits by current user and add repository info
+        # Filter commits by current user and add repository info AND branch info
         filtered_commits=$(echo "$commit_data" | jq --arg user "$CURRENT_USER" --arg repo "$repo" '
-          [.data.repository.refs.nodes[]?.target.history.nodes[]? // empty] |
-          map(select(.author.user.login == $user or .author.name == $user)) |
-          map(. + {repository: $repo})
+          [.data.repository.refs.nodes[]? as $ref | $ref.target.history.nodes[]? // empty |
+          select(.author.user.login == $user or .author.name == $user) |
+          . + {repository: $repo, branchName: $ref.name}]
         ' 2>/dev/null || echo "[]")
         
         # Deduplicate commits by OID and append to commits.json
@@ -517,7 +517,7 @@ process_commit() {
                 fi
             fi
         else
-            echo "${commit_title} - ${repo} (${oid})"
+            echo "${commit_title} (${oid})"
         fi
     fi
 }
@@ -602,40 +602,135 @@ fi
 commit_count=$(jq 'length' "$TEMP_DIR/commits.json")
 if [ "$commit_count" -gt 0 ]; then
     # Track if we actually display any commits after deduplication
-    displayed_commits=0
+    displayed_branches=0
     COMMITS_SECTION=""
     
-    # Process commits without subshell to preserve variable checks
+    # First, group commits by branch
+    # Using bash 3.x compatible approach (no associative arrays)
+    # Format: branch_name|commit_count|linear_ticket|pr_number|pr_url
+    BRANCH_GROUPS=""
+    
+    # Process commits to group by branch
     commit_lines=$(jq -c '.[]' "$TEMP_DIR/commits.json")
     while IFS= read -r commit_json; do
         [ -z "$commit_json" ] && continue
         
-        # Check if this commit is associated with a PR we've already shown
+        # Extract branch from commit data first, then check PR info
+        branch=$(echo "$commit_json" | jq -r '.branchName // ""')
         pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
         
         if [ -n "$pr_data" ] && [ "$pr_data" != "null" ]; then
             pr_number=$(echo "$pr_data" | jq -r '.number')
             pr_url=$(echo "$pr_data" | jq -r '.url')
-            branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
+            # Use PR branch if available, otherwise use commit branch
+            pr_branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
+            if [ -n "$pr_branch" ] && [ "$pr_branch" != "null" ]; then
+                branch="$pr_branch"
+            fi
             
             # Skip if PR was already shown
             if is_pr_seen "$pr_number" || is_url_seen "$pr_url"; then
                 continue
             fi
             
-            # Also skip if branch was already shown
+            # Skip if branch was already shown
             if [ -n "$branch" ] && [ "$branch" != "null" ] && is_branch_seen "$branch"; then
                 continue
             fi
         fi
         
-        output=$(process_commit "$commit_json")
-        COMMITS_SECTION+="- $output\n"
-        displayed_commits=$((displayed_commits + 1))
+        # If we have a branch (from commit or PR), track it
+        if [ -n "$branch" ] && [ "$branch" != "null" ]; then
+            # Extract Linear ticket from branch name
+            ticket_id=$(extract_linear_ticket "$branch")
+            
+            # Check if this branch is already in our groups
+            found_branch=0
+            NEW_GROUPS=""
+            while IFS='#' read -r group_entry; do
+                [ -z "$group_entry" ] && continue
+                branch_name=$(echo "$group_entry" | cut -d'|' -f1)
+                count=$(echo "$group_entry" | cut -d'|' -f2)
+                existing_ticket=$(echo "$group_entry" | cut -d'|' -f3)
+                existing_pr=$(echo "$group_entry" | cut -d'|' -f4)
+                existing_url=$(echo "$group_entry" | cut -d'|' -f5)
+                
+                if [ "$branch_name" = "$branch" ]; then
+                    count=$((count + 1))
+                    found_branch=1
+                    # Keep first PR info if we don't have one
+                    if [ -z "$existing_pr" ] || [ "$existing_pr" = "null" ] || [ "$existing_pr" = "" ]; then
+                        existing_pr="$pr_number"
+                        existing_url="$pr_url"
+                    fi
+                    # Update ticket if we found one and didn't have it before
+                    if [ -n "$ticket_id" ] && [ "$ticket_id" != "null" ] && [ -z "$existing_ticket" ]; then
+                        existing_ticket="$ticket_id"
+                    fi
+                fi
+                NEW_GROUPS+="${branch_name}|${count}|${existing_ticket}|${existing_pr}|${existing_url}#"
+            done <<< "${BRANCH_GROUPS//\#/$'\n'}"
+            
+            if [ "$found_branch" -eq 0 ]; then
+                # Add new branch
+                NEW_GROUPS+="${branch}|1|${ticket_id}|${pr_number}|${pr_url}#"
+            fi
+            BRANCH_GROUPS="$NEW_GROUPS"
+        else
+            # Commit without branch - process individually
+            output=$(process_commit "$commit_json")
+            COMMITS_SECTION+="- $output\n"
+            displayed_branches=$((displayed_branches + 1))
+        fi
     done <<< "$commit_lines"
     
+    # Now process grouped branches
+    while IFS='#' read -r group_entry; do
+        [ -z "$group_entry" ] && continue
+        
+        branch=$(echo "$group_entry" | cut -d'|' -f1)
+        count=$(echo "$group_entry" | cut -d'|' -f2)
+        ticket_id=$(echo "$group_entry" | cut -d'|' -f3)
+        pr_number=$(echo "$group_entry" | cut -d'|' -f4)
+        pr_url=$(echo "$group_entry" | cut -d'|' -f5)
+        
+        # Mark branch as seen
+        mark_branch_seen "$branch"
+        if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
+            mark_pr_seen "$pr_number"
+            mark_url_seen "$pr_url"
+        fi
+        
+        # Format the branch summary
+        if [ -n "$ticket_id" ] && [ "$ticket_id" != "null" ]; then
+            linear_url="https://linear.app/ventrata/issue/${ticket_id}"
+            linear_title=$(get_linear_task_title "$ticket_id" || true)
+            
+            if [ -n "$linear_title" ]; then
+                base_msg="${linear_title} [${ticket_id}](${linear_url}) - development on \`${branch}\`"
+            else
+                base_msg="[${ticket_id}](${linear_url}) - development on \`${branch}\`"
+            fi
+        else
+            base_msg="Development on \`${branch}\`"
+        fi
+        
+        # Add commit count if more than 1
+        if [ "$count" -gt 1 ]; then
+            base_msg+=" (${count} commits)"
+        fi
+        
+        # Add PR reference if available
+        if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
+            base_msg+=" [PR #${pr_number}](${pr_url})"
+        fi
+        
+        COMMITS_SECTION+="- ${base_msg}\n"
+        displayed_branches=$((displayed_branches + 1))
+    done <<< "${BRANCH_GROUPS//\#/$'\n'}"
+    
     # Only add section if we have commits to display
-    if [ "$displayed_commits" -gt 0 ]; then
+    if [ "$displayed_branches" -gt 0 ]; then
         REPORT_CONTENT+="### Commits, Merges, Resolutions\n"
         REPORT_CONTENT+="$COMMITS_SECTION"
         REPORT_CONTENT+="\n"
