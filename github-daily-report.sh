@@ -615,6 +615,10 @@ if [ "$commit_count" -gt 0 ]; then
     while IFS= read -r commit_json; do
         [ -z "$commit_json" ] && continue
         
+        # Reset PR variables for each commit
+        pr_number=""
+        pr_url=""
+        
         # Extract branch from commit data first, then check PR info
         branch=$(echo "$commit_json" | jq -r '.branchName // ""')
         pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
@@ -721,7 +725,7 @@ if [ "$commit_count" -gt 0 ]; then
         fi
         
         # Add PR reference if available
-        if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
+        if [ -n "$pr_number" ] && [ "$pr_number" != "null" ] && [ "$pr_number" != "" ]; then
             base_msg+=" [PR #${pr_number}](${pr_url})"
         fi
         
