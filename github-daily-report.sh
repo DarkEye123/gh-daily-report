@@ -439,15 +439,15 @@ process_pr() {
         # No Linear ticket
         if [ "$pr_type" = "code-review" ] && [ -n "$author" ]; then
             if [ "$format" = "slack" ]; then
-                echo "PR #${number}: ${title} (${url}) - ${repo} by @${author}"
+                echo "PR #${number}: ${title} (${url}) by @${author}"
             else
-                echo "[PR #${number}: ${title}](${url}) - ${repo} by @${author}"
+                echo "[PR #${number}: ${title}](${url}) by @${author}"
             fi
         else
             if [ "$format" = "slack" ]; then
-                echo "PR #${number}: ${title} (${url}) - ${repo}"
+                echo "PR #${number}: ${title} (${url})"
             else
-                echo "[PR #${number}: ${title}](${url}) - ${repo}"
+                echo "[PR #${number}: ${title}](${url})"
             fi
         fi
     fi
