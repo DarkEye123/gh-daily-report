@@ -315,67 +315,162 @@ jq -s '
 echo -e "${YELLOW}  - Searching for commits you made on ${DATE}...${NC}"
 echo "[]" > "$TEMP_DIR/commits.json"
 
-# Search for commits in each repository
-for repo in $GITHUB_REPOS; do
-    # Use GraphQL to fetch commits by the current user on the specific date
-    # We need to search all branches, so first get default branch
-    default_branch=$(gh api "repos/$repo" --jq '.default_branch' 2>/dev/null || echo "main")
-    
-    commit_data=$(gh api graphql -f query="
-    {
-      repository(owner: \"$(echo "$repo" | cut -d'/' -f1)\", name: \"$(echo "$repo" | cut -d'/' -f2)\") {
-        refs(refPrefix: \"refs/heads/\", first: 100) {
-          nodes {
-            name
-            target {
-              ... on Commit {
-                history(first: 100, since: \"${DATE}T00:00:00Z\", until: \"${DATE}T23:59:59Z\") {
-                  nodes {
-                    oid
-                    message
-                    author {
-                      name
-                      email
-                      user {
-                        login
-                      }
-                    }
-                    authoredDate
-                    associatedPullRequests(first: 1) {
-                      nodes {
-                        number
-                        title
-                        url
-                        headRefName
-                        createdAt
-                      }
-                    }
-                  }
+# GraphQL helper queries for commit discovery
+IFS='' read -r -d '' BRANCHES_QUERY <<'EOF' || true
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    refs(refPrefix: "refs/heads/", first: 50, after: $cursor, orderBy: {field: ALPHABETICAL, direction: ASC}) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        name
+        target {
+          __typename
+          ... on Commit {
+            committedDate
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+
+IFS='' read -r -d '' COMMITS_BY_BRANCH_QUERY <<'EOF' || true
+query($owner: String!, $name: String!, $branch: String!, $since: GitTimestamp!, $until: GitTimestamp!) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $branch) {
+      name
+      target {
+        ... on Commit {
+          history(first: 50, since: $since, until: $until) {
+            nodes {
+              oid
+              message
+              authoredDate
+              author {
+                name
+                email
+                user {
+                  login
+                }
+              }
+              associatedPullRequests(first: 1) {
+                nodes {
+                  number
+                  title
+                  url
+                  headRefName
+                  createdAt
                 }
               }
             }
           }
         }
       }
-    }" 2>/dev/null)
-    
-    if [ $? -eq 0 ]; then
-        # Filter commits by current user and add repository info AND branch info
-        filtered_commits=$(echo "$commit_data" | jq --arg user "$CURRENT_USER" --arg repo "$repo" '
-          [.data.repository.refs.nodes[]? as $ref | $ref.target.history.nodes[]? // empty |
-          select(.author.user.login == $user or .author.name == $user) |
-          . + {repository: $repo, branchName: $ref.name}]
-        ' 2>/dev/null || echo "[]")
-        
-        # Deduplicate commits by OID and append to commits.json
-        if [ -n "$filtered_commits" ] && [ "$filtered_commits" != "[]" ]; then
-            jq --argjson new_commits "$filtered_commits" '
-              . as $existing |
-              ($existing + $new_commits) |
-              unique_by(.oid)
-            ' "$TEMP_DIR/commits.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/commits.json"
+    }
+  }
+}
+EOF
+
+# Search for commits in each repository
+for repo in $GITHUB_REPOS; do
+    owner="$(echo "$repo" | cut -d'/' -f1)"
+    name="$(echo "$repo" | cut -d'/' -f2)"
+    cursor=""
+
+    while :; do
+        if [ -n "$cursor" ]; then
+            if ! branches_payload=$(gh api graphql \
+                -f query="$BRANCHES_QUERY" \
+                -F owner="$owner" \
+                -F name="$name" \
+                -F cursor="$cursor" 2>/dev/null); then
+                echo -e "${YELLOW}    ⚠️  Unable to list branches for ${repo}; skipping commit lookup.${NC}" >&2
+                break
+            fi
+        else
+            if ! branches_payload=$(gh api graphql \
+                -f query="$BRANCHES_QUERY" \
+                -F owner="$owner" \
+                -F name="$name" 2>/dev/null); then
+                echo -e "${YELLOW}    ⚠️  Unable to list branches for ${repo}; skipping commit lookup.${NC}" >&2
+                break
+            fi
         fi
-    fi
+
+        if [ -z "$branches_payload" ]; then
+            echo -e "${YELLOW}    ⚠️  Unable to list branches for ${repo}; skipping commit lookup.${NC}" >&2
+            break
+        fi
+
+        if echo "$branches_payload" | jq -e '.errors' >/dev/null 2>&1; then
+            echo -e "${YELLOW}    ⚠️  GraphQL error while listing branches for ${repo}; skipping.${NC}" >&2
+            break
+        fi
+
+        # Extract branch names from the payload
+        branch_names=$(echo "$branches_payload" | jq -r '
+          .data.repository.refs.nodes[]? |
+          [.name, (if .target.__typename == "Commit" then (.target.committedDate // "") else "" end)] | @tsv
+        ' 2>/dev/null || true)
+
+        if [ -n "$branch_names" ]; then
+            while IFS=$'\t' read -r branch_name tip_date; do
+                [ -z "$branch_name" ] && continue
+
+                # Skip branches whose tip commit predates the requested day to avoid expensive lookups
+                start_of_day="${DATE}T00:00:00Z"
+                if [ -n "$tip_date" ] && [[ "$tip_date" < "$start_of_day" ]]; then
+                    continue
+                fi
+
+                branch_ref="refs/heads/${branch_name}"
+
+                if ! commit_payload=$(gh api graphql \
+                    -f query="$COMMITS_BY_BRANCH_QUERY" \
+                    -F owner="$owner" \
+                    -F name="$name" \
+                    -F branch="$branch_ref" \
+                    -F since="${DATE}T00:00:00Z" \
+                    -F until="${DATE}T23:59:59Z" 2>/dev/null); then
+                    echo -e "${YELLOW}      ⚠️  Failed to load commits for ${repo}:${branch_name}.${NC}" >&2
+                    continue
+                fi
+
+                if [ -z "$commit_payload" ]; then
+                    continue
+                fi
+
+                if echo "$commit_payload" | jq -e '.errors' >/dev/null 2>&1; then
+                    echo -e "${YELLOW}      ⚠️  GraphQL error on ${repo}:${branch_name}; skipping branch.${NC}" >&2
+                    continue
+                fi
+
+                filtered_commits=$(echo "$commit_payload" | jq --arg user "$CURRENT_USER" --arg repo "$repo" --arg branch "$branch_name" '
+                  [.data.repository.ref.target.history.nodes[]? // empty |
+                   select((.author.user.login // "") == $user or (.author.name // "") == $user) |
+                   . + {repository: $repo, branchName: $branch}]' 2>/dev/null || echo "[]")
+
+                if [ -n "$filtered_commits" ] && [ "$filtered_commits" != "[]" ]; then
+                    jq --argjson new_commits "$filtered_commits" '
+                      . as $existing |
+                      ($existing + $new_commits) |
+                      unique_by(.oid)
+                    ' "$TEMP_DIR/commits.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/commits.json"
+                fi
+            done <<< "$branch_names"
+        fi
+
+        has_next=$(echo "$branches_payload" | jq -r '.data.repository.refs.pageInfo.hasNextPage // false')
+        cursor=$(echo "$branches_payload" | jq -r '.data.repository.refs.pageInfo.endCursor // ""')
+
+        if [ "$has_next" != "true" ] || [ -z "$cursor" ] || [ "$cursor" = "null" ]; then
+            break
+        fi
+    done
 done
 
 # Filter out commits that are already part of PRs created today
