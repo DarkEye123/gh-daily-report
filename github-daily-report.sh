@@ -179,6 +179,7 @@ jq -c '.[]' "$TEMP_DIR/reviewed_all.json" | while read -r pr_json; do
                 login
               }
               createdAt
+              submittedAt
             }
           }
         }
@@ -188,7 +189,7 @@ jq -c '.[]' "$TEMP_DIR/reviewed_all.json" | while read -r pr_json; do
     if [ $? -eq 0 ]; then
         has_review=$(echo "$review_data" | jq --arg user "$CURRENT_USER" --arg date "$DATE" '
           .data.repository.pullRequest.reviews.nodes // [] |
-          map(select(.author.login == $user and (.createdAt | startswith($date)))) |
+          map(select((.author.login // "") == $user and (((.submittedAt // .createdAt // "") | startswith($date))))) |
           length > 0
         ')
         
@@ -272,6 +273,7 @@ jq -c '.[]' "$TEMP_DIR/potential_commented.json" | while read -r pr_json; do
                   login
                 }
                 createdAt
+                submittedAt
               }
             }
           }
@@ -283,7 +285,7 @@ jq -c '.[]' "$TEMP_DIR/potential_commented.json" | while read -r pr_json; do
         # Check if current user commented on the specific date
         has_activity=$(echo "$timeline_data" | jq --arg user "$CURRENT_USER" --arg date "$DATE" '
           .data.repository.pullRequest.timelineItems.nodes // [] |
-          map(select(.author.login == $user and (.createdAt | startswith($date)))) |
+          map(select((.author.login // "") == $user and (((.submittedAt // .createdAt // "") | startswith($date))))) |
           length > 0
         ')
         
@@ -472,6 +474,9 @@ for repo in $GITHUB_REPOS; do
         fi
     done
 done
+
+# Preserve full commit list for summary statistics before filtering
+cp "$TEMP_DIR/commits.json" "$TEMP_DIR/commits_all.json"
 
 # Filter out commits that are already part of PRs created today
 jq --slurpfile authored "$TEMP_DIR/authored.json" '
@@ -694,8 +699,9 @@ if [ "$review_count" -gt 0 ]; then
 fi
 
 # Process commits
-commit_count=$(jq 'length' "$TEMP_DIR/commits.json")
-if [ "$commit_count" -gt 0 ]; then
+commit_total_count=$(jq 'length' "$TEMP_DIR/commits_all.json")
+commit_display_count=$(jq 'length' "$TEMP_DIR/commits.json")
+if [ "$commit_display_count" -gt 0 ]; then
     # Track if we actually display any commits after deduplication
     displayed_branches=0
     COMMITS_SECTION=""
@@ -849,11 +855,11 @@ if [ -n "$REPORT_CONTENT" ]; then
 fi
 
 # Summary
-total=$((authored_count + review_count + commit_count))
+total=$((authored_count + review_count + commit_total_count))
 if [ "$total" -eq 0 ]; then
     echo -e "${YELLOW}No GitHub activity found for ${DATE}${NC}"
 else
-    echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_count} commits${NC}"
+    echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_total_count} commits${NC}"
     
     # Show breakdown if we have both reviews and comments
     reviewed_count=$(jq 'length' "$TEMP_DIR/reviewed.json")
