@@ -1,0 +1,17 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "IssueComment",
+              "author": {"login": "testuser"},
+              "createdAt": "2025-07-01T12:00:00Z"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

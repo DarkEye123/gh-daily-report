@@ -1,0 +1,52 @@
+{
+  "data": {
+    "repository": {
+      "refs": {
+        "nodes": [
+          {
+            "name": "main",
+            "target": {
+              "history": {
+                "nodes": [
+                  {
+                    "oid": "abc123def456",
+                    "message": "feat: add new feature\n\nDetailed description",
+                    "author": {
+                      "name": "Test User",
+                      "email": "test@example.com",
+                      "user": {"login": "testuser"}
+                    },
+                    "authoredDate": "2025-07-01T14:00:00Z",
+                    "associatedPullRequests": {
+                      "nodes": [
+                        {
+                          "number": 123,
+                          "title": "feat: add new feature",
+                          "url": "https://github.com/test/repo/pull/123",
+                          "headRefName": "feature/CHE-123-new-feature"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "oid": "def789ghi012",
+                    "message": "fix: standalone commit",
+                    "author": {
+                      "name": "Test User",
+                      "email": "test@example.com",
+                      "user": {"login": "testuser"}
+                    },
+                    "authoredDate": "2025-07-01T15:00:00Z",
+                    "associatedPullRequests": {
+                      "nodes": []
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

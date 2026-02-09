@@ -21,25 +21,27 @@ TESTS_FAILED=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/date-utils.sh"
 
-# Create test data directory if it doesn't exist
-TEST_DATA_DIR="${SCRIPT_DIR}/test-data"
+# Create test fixtures in a temp dir (avoid polluting repo working tree)
+TEST_TMP_DIR=$(mktemp -d)
+TEST_DATA_DIR="${TEST_TMP_DIR}/test-data"
 mkdir -p "$TEST_DATA_DIR"
+trap 'rm -rf "$TEST_TMP_DIR"' EXIT
 
 # Function to run a test
 run_test() {
     local test_name="$1"
     local test_function="$2"
     
-    ((TESTS_RUN++))
+    TESTS_RUN=$((TESTS_RUN + 1))
     echo -n "Running test: $test_name... "
     
     # Run test in subshell to prevent it from affecting global state
     if (eval "$test_function" >/dev/null 2>&1); then
         echo -e "${GREEN}PASSED${NC}"
-        ((TESTS_PASSED++))
+        TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         echo -e "${RED}FAILED${NC}"
-        ((TESTS_FAILED++))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
 }
 
@@ -141,6 +143,48 @@ test_previous_working_day_tuesday() {
 test_invalid_date_format() {
     local result=$(parse_date "invalid-date" 2>&1)
     [[ "$result" == *"Error: Invalid date format"* ]]
+}
+
+# Test: Friday date range expands to include weekend (full weekend available)
+test_friday_includes_weekend_range() {
+    local range
+    range=$(get_report_date_range "2026-01-16" "2026-01-20") || return 1
+    [ "$range" = "2026-01-16 2026-01-18" ]
+}
+
+# Test: Friday date range is capped to today (avoid future weekend days)
+test_friday_range_capped_to_today() {
+    local range
+    range=$(get_report_date_range "2026-01-16" "2026-01-17") || return 1
+    [ "$range" = "2026-01-16 2026-01-17" ]
+}
+
+# Test: Saturday expands to include Friday + Saturday (and not Sunday if it's in the future)
+test_saturday_includes_friday_range_capped() {
+    local range
+    range=$(get_report_date_range "2026-01-17" "2026-01-17") || return 1
+    [ "$range" = "2026-01-16 2026-01-17" ]
+}
+
+# Test: Sunday expands to include Friday + Saturday + Sunday
+test_sunday_includes_full_weekend_range() {
+    local range
+    range=$(get_report_date_range "2026-01-18" "2026-01-18") || return 1
+    [ "$range" = "2026-01-16 2026-01-18" ]
+}
+
+# Test: Non-Friday date stays single-day range
+test_non_friday_single_day_range() {
+    local range
+    range=$(get_report_date_range "2026-01-15" "2026-01-20") || return 1
+    [ "$range" = "2026-01-15 2026-01-15" ]
+}
+
+# Test: Friday in the future does not produce an invalid range
+test_future_friday_does_not_reverse_range() {
+    local range
+    range=$(get_report_date_range "2026-01-23" "2026-01-17") || return 1
+    [ "$range" = "2026-01-23 2026-01-23" ]
 }
 
 # Create mock data files
@@ -346,6 +390,12 @@ run_test "Yesterday keyword parsing" test_yesterday_keyword
 run_test "Previous working day - Monday" test_previous_working_day_monday
 run_test "Previous working day - Tuesday" test_previous_working_day_tuesday
 run_test "Invalid date format handling" test_invalid_date_format
+run_test "Friday expands to weekend range" test_friday_includes_weekend_range
+run_test "Friday range capped to today" test_friday_range_capped_to_today
+run_test "Saturday includes Friday (capped)" test_saturday_includes_friday_range_capped
+run_test "Sunday includes full weekend" test_sunday_includes_full_weekend_range
+run_test "Non-Friday stays single day range" test_non_friday_single_day_range
+run_test "Future Friday does not reverse range" test_future_friday_does_not_reverse_range
 run_test "Empty date defaults to previous working day" test_empty_date_default
 
 # Deduplication tests
