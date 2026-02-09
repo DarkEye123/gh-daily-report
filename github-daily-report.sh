@@ -31,7 +31,19 @@ if ! validate_date "$DATE"; then
     exit 1
 fi
 
-echo -e "${BLUE}GitHub Activity Report for ${DATE}${NC}"
+# Determine report date range (Friday -> include weekend, capped to today)
+REPORT_RANGE=$(get_report_date_range "$DATE") || exit 1
+IFS=' ' read -r REPORT_START_DATE REPORT_END_DATE <<< "$REPORT_RANGE"
+
+START_OF_RANGE="${REPORT_START_DATE}T00:00:00Z"
+END_OF_RANGE="${REPORT_END_DATE}T23:59:59Z"
+
+DATE_LABEL="$REPORT_START_DATE"
+if [ "$REPORT_START_DATE" != "$REPORT_END_DATE" ]; then
+    DATE_LABEL="${REPORT_START_DATE} to ${REPORT_END_DATE}"
+fi
+
+echo -e "${BLUE}GitHub Activity Report for ${DATE_LABEL}${NC}"
 echo "================================================"
 
 # Configuration
@@ -138,8 +150,12 @@ mark_branch_seen() {
 echo -e "\n${YELLOW}Fetching your GitHub activity...${NC}"
 
 # 1. Fetch PRs created today
-echo -e "${YELLOW}  - Searching for PRs you created on ${DATE}...${NC}"
-gh search prs ${REPO_FILTER} author:@me created:"${DATE}" \
+echo -e "${YELLOW}  - Searching for PRs you created on ${DATE_LABEL}...${NC}"
+CREATED_QUALIFIER="${DATE}"
+if [ "$REPORT_START_DATE" != "$REPORT_END_DATE" ]; then
+    CREATED_QUALIFIER="${REPORT_START_DATE}..${REPORT_END_DATE}"
+fi
+gh search prs ${REPO_FILTER} author:@me created:"${CREATED_QUALIFIER}" \
     --json number,title,url,repository,author,createdAt \
     --limit 100 \
     > "$TEMP_DIR/authored.json"
@@ -148,7 +164,7 @@ gh search prs ${REPO_FILTER} author:@me created:"${DATE}" \
 echo -e "${YELLOW}  - Searching for PRs you reviewed...${NC}"
 
 # Get PRs potentially reviewed in the last N days
-LOOKBACK_DATE=$(date -d "${DATE} -${LOOKBACK_DAYS} days" -I 2>/dev/null || date -v-${LOOKBACK_DAYS}d -I)
+LOOKBACK_DATE=$(date -d "${REPORT_START_DATE} -${LOOKBACK_DAYS} days" -I 2>/dev/null || date -v-${LOOKBACK_DAYS}d -I)
 
 # Validate date generation
 if [ -z "$LOOKBACK_DATE" ] || [ "$LOOKBACK_DATE" = "" ]; then
@@ -187,9 +203,12 @@ jq -c '.[]' "$TEMP_DIR/reviewed_all.json" | while read -r pr_json; do
     }" 2>/dev/null)
     
     if [ $? -eq 0 ]; then
-        has_review=$(echo "$review_data" | jq --arg user "$CURRENT_USER" --arg date "$DATE" '
+        has_review=$(echo "$review_data" | jq --arg user "$CURRENT_USER" --arg start_ts "$START_OF_RANGE" --arg end_ts "$END_OF_RANGE" '
           .data.repository.pullRequest.reviews.nodes // [] |
-          map(select((.author.login // "") == $user and (((.submittedAt // .createdAt // "") | startswith($date))))) |
+          map(select(
+            (.author.login // "") == $user and
+            ((.submittedAt // .createdAt // "") as $ts | ($ts != "" and $ts >= $start_ts and $ts <= $end_ts))
+          )) |
           length > 0
         ')
         
@@ -214,7 +233,7 @@ echo -e "${YELLOW}  - Searching for PRs you commented on...${NC}"
 
 # First, get a list of recently active PRs where you might have commented
 # We look back N days to ensure we don't miss any PRs
-LOOKBACK_DATE=$(date -d "${DATE} -${LOOKBACK_DAYS} days" -I 2>/dev/null || date -v-${LOOKBACK_DAYS}d -I)
+LOOKBACK_DATE=$(date -d "${REPORT_START_DATE} -${LOOKBACK_DAYS} days" -I 2>/dev/null || date -v-${LOOKBACK_DAYS}d -I)
 
 # Build GraphQL repository filter
 GRAPHQL_REPO_FILTER=""
@@ -283,9 +302,12 @@ jq -c '.[]' "$TEMP_DIR/potential_commented.json" | while read -r pr_json; do
     
     if [ $? -eq 0 ]; then
         # Check if current user commented on the specific date
-        has_activity=$(echo "$timeline_data" | jq --arg user "$CURRENT_USER" --arg date "$DATE" '
+        has_activity=$(echo "$timeline_data" | jq --arg user "$CURRENT_USER" --arg start_ts "$START_OF_RANGE" --arg end_ts "$END_OF_RANGE" '
           .data.repository.pullRequest.timelineItems.nodes // [] |
-          map(select((.author.login // "") == $user and (((.submittedAt // .createdAt // "") | startswith($date))))) |
+          map(select(
+            (.author.login // "") == $user and
+            ((.submittedAt // .createdAt // "") as $ts | ($ts != "" and $ts >= $start_ts and $ts <= $end_ts))
+          )) |
           length > 0
         ')
         
@@ -314,7 +336,7 @@ jq -s '
 ' "$TEMP_DIR/reviewed.json" "$TEMP_DIR/commented_only.json" > "$TEMP_DIR/all_reviews.json"
 
 # 4. Fetch commits made on the specific date
-echo -e "${YELLOW}  - Searching for commits you made on ${DATE}...${NC}"
+echo -e "${YELLOW}  - Searching for commits you made on ${DATE_LABEL}...${NC}"
 echo "[]" > "$TEMP_DIR/commits.json"
 
 # GraphQL helper queries for commit discovery
@@ -424,8 +446,7 @@ for repo in $GITHUB_REPOS; do
                 [ -z "$branch_name" ] && continue
 
                 # Skip branches whose tip commit predates the requested day to avoid expensive lookups
-                start_of_day="${DATE}T00:00:00Z"
-                if [ -n "$tip_date" ] && [[ "$tip_date" < "$start_of_day" ]]; then
+                if [ -n "$tip_date" ] && [[ "$tip_date" < "$START_OF_RANGE" ]]; then
                     continue
                 fi
 
@@ -436,8 +457,8 @@ for repo in $GITHUB_REPOS; do
                     -F owner="$owner" \
                     -F name="$name" \
                     -F branch="$branch_ref" \
-                    -F since="${DATE}T00:00:00Z" \
-                    -F until="${DATE}T23:59:59Z" 2>/dev/null); then
+                    -F since="$START_OF_RANGE" \
+                    -F until="$END_OF_RANGE" 2>/dev/null); then
                     echo -e "${YELLOW}      ⚠️  Failed to load commits for ${repo}:${branch_name}.${NC}" >&2
                     continue
                 fi
@@ -624,7 +645,7 @@ process_commit() {
 
 # Generate report
 echo -e "\n${GREEN}## Daily GitHub Activity Summary${NC}"
-echo -e "${GREEN}Date: ${DATE}${NC}\n"
+echo -e "${GREEN}Date: ${DATE_LABEL}${NC}\n"
 
 # Build the report content once
 REPORT_CONTENT=""
@@ -857,7 +878,7 @@ fi
 # Summary
 total=$((authored_count + review_count + commit_total_count))
 if [ "$total" -eq 0 ]; then
-    echo -e "${YELLOW}No GitHub activity found for ${DATE}${NC}"
+    echo -e "${YELLOW}No GitHub activity found for ${DATE_LABEL}${NC}"
 else
     echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_total_count} commits${NC}"
     
