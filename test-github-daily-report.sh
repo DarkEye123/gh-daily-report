@@ -59,7 +59,11 @@ setup_mock_gh() {
 
 # Parse the command
 if [ "$1" = "api" ] && [ "$2" = "user" ]; then
-    echo '{"login": "testuser"}'
+    if [[ "$*" == *"--jq"* ]]; then
+        echo "testuser"
+    else
+        echo '{"login": "testuser"}'
+    fi
     exit 0
 fi
 
@@ -75,12 +79,18 @@ fi
 
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
     # Return appropriate mock data based on the query
-    if [[ "$*" == *"timelineItems"* ]]; then
+    if [[ "$*" == *".data.search.nodes"* ]]; then
+        echo "[]"
+    elif [[ "$*" == *"timelineItems"* ]]; then
         cat "$TEST_DATA_DIR/timeline-items.json"
-    elif [[ "$*" == *"reviews"* ]]; then
+    elif [[ "$*" == *"reviews(first: 100)"* ]]; then
         cat "$TEST_DATA_DIR/pr-reviews.json"
-    elif [[ "$*" == *"refs"* ]]; then
-        cat "$TEST_DATA_DIR/commits.json"
+    elif [[ "$*" == *"type: ISSUE"* ]]; then
+        cat "$TEST_DATA_DIR/comment-search.json"
+    elif [[ "$*" == *"refs(refPrefix: \"refs/heads/\""* ]]; then
+        cat "$TEST_DATA_DIR/branches.json"
+    elif [[ "$*" == *"history(first: 50"* ]]; then
+        cat "$TEST_DATA_DIR/commits-by-branch.json"
     else
         echo '{"data": {}}'
     fi
@@ -89,7 +99,11 @@ fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     # Return mock PR view data
-    echo '{"headRefName": "feature/test-branch"}'
+    if [[ "$*" == *"-q"* ]]; then
+        echo "feature/test-branch"
+    else
+        echo '{"headRefName": "feature/test-branch"}'
+    fi
     exit 0
 fi
 
@@ -207,7 +221,7 @@ create_mock_data() {
     "url": "https://github.com/test/repo/pull/124",
     "repository": {"nameWithOwner": "test/repo"},
     "author": {"login": "testuser"},
-    "headRefName": "fix/bug-fix",
+    "headRefName": "feature/main-task",
     "createdAt": "2025-07-01T11:00:00Z"
   }
 ]
@@ -276,56 +290,95 @@ EOF
 }
 EOF
 
-    # Mock commits
-    cat > "$TEST_DATA_DIR/commits.json" << 'EOF'
+    # Mock comment search response
+    cat > "$TEST_DATA_DIR/comment-search.json" << 'EOF'
+{
+  "data": {
+    "search": {
+      "nodes": []
+    }
+  }
+}
+EOF
+
+    # Mock branch listing response
+    cat > "$TEST_DATA_DIR/branches.json" << 'EOF'
 {
   "data": {
     "repository": {
       "refs": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
         "nodes": [
           {
-            "name": "main",
+            "name": "feature/main-task",
             "target": {
-              "history": {
-                "nodes": [
-                  {
-                    "oid": "abc123def456",
-                    "message": "feat: add new feature\n\nDetailed description",
-                    "author": {
-                      "name": "Test User",
-                      "email": "test@example.com",
-                      "user": {"login": "testuser"}
-                    },
-                    "authoredDate": "2025-07-01T14:00:00Z",
-                    "associatedPullRequests": {
-                      "nodes": [
-                        {
-                          "number": 123,
-                          "title": "feat: add new feature",
-                          "url": "https://github.com/test/repo/pull/123",
-                          "headRefName": "feature/CHE-123-new-feature"
-                        }
-                      ]
-                    }
-                  },
-                  {
-                    "oid": "def789ghi012",
-                    "message": "fix: standalone commit",
-                    "author": {
-                      "name": "Test User",
-                      "email": "test@example.com",
-                      "user": {"login": "testuser"}
-                    },
-                    "authoredDate": "2025-07-01T15:00:00Z",
-                    "associatedPullRequests": {
-                      "nodes": []
-                    }
-                  }
-                ]
-              }
+              "__typename": "Commit",
+              "committedDate": "2025-07-01T15:00:00Z"
             }
           }
         ]
+      }
+    }
+  }
+}
+EOF
+
+    # Mock commits-by-branch response
+    cat > "$TEST_DATA_DIR/commits-by-branch.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "ref": {
+        "name": "feature/main-task",
+        "target": {
+          "history": {
+            "nodes": [
+              {
+                "oid": "abc123def456",
+                "message": "feat: add new feature\n\nDetailed description",
+                "author": {
+                  "name": "Test User",
+                  "email": "test@example.com",
+                  "user": {"login": "testuser"}
+                },
+                "authoredDate": "2025-07-01T14:00:00Z",
+                "associatedPullRequests": {
+                  "nodes": [
+                    {
+                      "number": 123,
+                      "title": "feat: add new feature",
+                      "url": "https://github.com/test/repo/pull/123",
+                      "headRefName": "feature/CHE-123-new-feature"
+                    }
+                  ]
+                }
+              },
+              {
+                "oid": "def789ghi012",
+                "message": "fix: CHE-1961 locale subtask",
+                "author": {
+                  "name": "Test User",
+                  "email": "test@example.com",
+                  "user": {"login": "testuser"}
+                },
+                "authoredDate": "2025-07-01T15:00:00Z",
+                "associatedPullRequests": {
+                  "nodes": [
+                    {
+                      "number": 124,
+                      "title": "fix: bug fix",
+                      "url": "https://github.com/test/repo/pull/124",
+                      "headRefName": "feature/main-task"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
       }
     }
   }
@@ -354,6 +407,28 @@ test_deduplication() {
         return 0
     else
         echo "Expected PR #123 to appear once, but found $count_123 occurrences" >&2
+        return 1
+    fi
+}
+
+# Test: Keep commit entry when it adds a different ticket than PR/branch context
+test_commit_subtask_ticket_visible() {
+    setup_mock_gh
+    create_mock_data
+
+    # Export test data dir for mock gh to find it
+    export TEST_DATA_DIR
+
+    # Run the script with a specific date
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+
+    cleanup_mock_gh
+
+    # Commit message contains CHE-1961 even though PR/branch do not
+    if [[ "$output" == *"CHE-1961"* ]]; then
+        return 0
+    else
+        echo "Expected CHE-1961 from commit message to appear in report output" >&2
         return 1
     fi
 }
@@ -400,6 +475,7 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 
 # Deduplication tests
 run_test "PR deduplication across sections" test_deduplication
+run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
 
 # Summary
 echo

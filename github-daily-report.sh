@@ -73,6 +73,94 @@ extract_linear_ticket() {
     echo "$text" | grep -oE 'CHE-[0-9]+' | head -1 || true
 }
 
+# Append ticket to a comma-separated list if not already present
+append_ticket_unique() {
+    local existing="$1"
+    local ticket="$2"
+
+    if [ -z "$ticket" ] || [ "$ticket" = "null" ]; then
+        echo "$existing"
+        return
+    fi
+
+    case ",$existing," in
+        *",$ticket,"*)
+            echo "$existing"
+            ;;
+        *)
+            if [ -z "$existing" ]; then
+                echo "$ticket"
+            else
+                echo "${existing},${ticket}"
+            fi
+            ;;
+    esac
+}
+
+# Merge two comma-separated ticket lists while preserving order
+merge_ticket_lists() {
+    local existing="$1"
+    local incoming="$2"
+    local merged="$existing"
+    local ticket
+    local old_ifs="$IFS"
+
+    IFS=','
+    for ticket in $incoming; do
+        merged=$(append_ticket_unique "$merged" "$ticket")
+    done
+    IFS="$old_ifs"
+
+    echo "$merged"
+}
+
+# Build a unique ticket list from commit context (branch, PR title, commit title, full message)
+build_commit_ticket_list() {
+    local branch="$1"
+    local pr_title="$2"
+    local commit_title="$3"
+    local message="$4"
+    local tickets=""
+    local ticket=""
+
+    ticket=$(extract_linear_ticket "$branch")
+    tickets=$(append_ticket_unique "$tickets" "$ticket")
+
+    ticket=$(extract_linear_ticket "$pr_title")
+    tickets=$(append_ticket_unique "$tickets" "$ticket")
+
+    ticket=$(extract_linear_ticket "$commit_title")
+    tickets=$(append_ticket_unique "$tickets" "$ticket")
+
+    ticket=$(extract_linear_ticket "$message")
+    tickets=$(append_ticket_unique "$tickets" "$ticket")
+
+    echo "$tickets"
+}
+
+# Choose the best ticket candidate for a commit output line
+resolve_commit_ticket() {
+    local branch="$1"
+    local pr_title="$2"
+    local commit_title="$3"
+    local message="$4"
+    local ticket_id=""
+
+    # Prefer task references in commit text, then PR title, then branch
+    ticket_id=$(extract_linear_ticket "$commit_title")
+    if [ -z "$ticket_id" ]; then
+        ticket_id=$(extract_linear_ticket "$message")
+    fi
+    if [ -z "$ticket_id" ]; then
+        ticket_id=$(extract_linear_ticket "$pr_title")
+    fi
+    if [ -z "$ticket_id" ]; then
+        ticket_id=$(extract_linear_ticket "$branch")
+    fi
+
+    echo "$ticket_id"
+}
+
 # Function to get Linear task title
 get_linear_task_title() {
     local ticket_id="$1"
@@ -499,24 +587,6 @@ done
 # Preserve full commit list for summary statistics before filtering
 cp "$TEMP_DIR/commits.json" "$TEMP_DIR/commits_all.json"
 
-# Filter out commits that are already part of PRs created today
-jq --slurpfile authored "$TEMP_DIR/authored.json" '
-  . as $commits |
-  map(
-    . as $commit |
-    if ($commit.associatedPullRequests.nodes | length) > 0 then
-      $commit.associatedPullRequests.nodes[0] as $pr |
-      if ($authored[0] | map(.url) | index($pr.url)) then
-        empty
-      else
-        $commit
-      end
-    else
-      $commit
-    end
-  )
-' "$TEMP_DIR/commits.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/commits.json"
-
 # Function to process a PR and format the output
 process_pr() {
     local pr_json="$1"
@@ -536,6 +606,9 @@ process_pr() {
     fi
     
     local ticket_id=$(extract_linear_ticket "$branch")
+    if [ -z "$ticket_id" ]; then
+        ticket_id=$(extract_linear_ticket "$title")
+    fi
     
     if [ -n "$ticket_id" ]; then
         local linear_url="https://linear.app/ventrata/issue/${ticket_id}"
@@ -583,15 +656,20 @@ process_commit() {
     local oid=$(echo "$commit_json" | jq -r '.oid' | cut -c1-7)
     local repo=$(echo "$commit_json" | jq -r '.repository')
     local pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
+    local branch=$(echo "$commit_json" | jq -r '.branchName // ""')
     
     # Extract first line of commit message
     local commit_title=$(echo "$message" | head -1)
     
     if [ -n "$pr_data" ] && [ "$pr_data" != "null" ]; then
         local pr_number=$(echo "$pr_data" | jq -r '.number')
+        local pr_title=$(echo "$pr_data" | jq -r '.title // ""')
         local pr_url=$(echo "$pr_data" | jq -r '.url')
-        local branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
-        local ticket_id=$(extract_linear_ticket "$branch")
+        local pr_branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
+        if [ -n "$pr_branch" ] && [ "$pr_branch" != "null" ]; then
+            branch="$pr_branch"
+        fi
+        local ticket_id=$(resolve_commit_ticket "$branch" "$pr_title" "$commit_title" "$message")
         
         if [ -n "$ticket_id" ]; then
             local linear_url="https://linear.app/ventrata/issue/${ticket_id}"
@@ -619,7 +697,7 @@ process_commit() {
         fi
     else
         # Commit without PR
-        local ticket_id=$(extract_linear_ticket "$commit_title")
+        local ticket_id=$(resolve_commit_ticket "$branch" "" "$commit_title" "$message")
         if [ -n "$ticket_id" ]; then
             local linear_url="https://linear.app/ventrata/issue/${ticket_id}"
             local linear_title=$(get_linear_task_title "$ticket_id")
@@ -729,7 +807,7 @@ if [ "$commit_display_count" -gt 0 ]; then
     
     # First, group commits by branch
     # Using bash 3.x compatible approach (no associative arrays)
-    # Format: branch_name|commit_count|linear_ticket|pr_number|pr_url
+    # Format: branch_name|commit_count|linear_tickets_csv|pr_number|pr_url
     BRANCH_GROUPS=""
     
     # Process commits to group by branch
@@ -742,33 +820,58 @@ if [ "$commit_display_count" -gt 0 ]; then
         pr_url=""
         
         # Extract branch from commit data first, then check PR info
+        message=$(echo "$commit_json" | jq -r '.message // ""')
+        commit_title=$(echo "$message" | head -1)
         branch=$(echo "$commit_json" | jq -r '.branchName // ""')
         pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
-        
+        pr_title=""
+        branch_ticket=""
+        pr_title_ticket=""
+        commit_title_ticket=""
+        message_ticket=""
+        extra_commit_ticket=""
+        is_seen_context=0
+
         if [ -n "$pr_data" ] && [ "$pr_data" != "null" ]; then
             pr_number=$(echo "$pr_data" | jq -r '.number')
             pr_url=$(echo "$pr_data" | jq -r '.url')
+            pr_title=$(echo "$pr_data" | jq -r '.title // ""')
             # Use PR branch if available, otherwise use commit branch
             pr_branch=$(echo "$pr_data" | jq -r '.headRefName // ""')
             if [ -n "$pr_branch" ] && [ "$pr_branch" != "null" ]; then
                 branch="$pr_branch"
             fi
-            
-            # Skip if PR was already shown
+        fi
+
+        branch_ticket=$(extract_linear_ticket "$branch")
+        pr_title_ticket=$(extract_linear_ticket "$pr_title")
+        commit_title_ticket=$(extract_linear_ticket "$commit_title")
+        message_ticket=$(extract_linear_ticket "$message")
+
+        if [ -n "$commit_title_ticket" ] && [ "$commit_title_ticket" != "$branch_ticket" ] && [ "$commit_title_ticket" != "$pr_title_ticket" ]; then
+            extra_commit_ticket="$commit_title_ticket"
+        elif [ -n "$message_ticket" ] && [ "$message_ticket" != "$branch_ticket" ] && [ "$message_ticket" != "$pr_title_ticket" ]; then
+            extra_commit_ticket="$message_ticket"
+        fi
+
+        if [ -n "$pr_number" ] && [ -n "$pr_url" ]; then
             if is_pr_seen "$pr_number" || is_url_seen "$pr_url"; then
-                continue
-            fi
-            
-            # Skip if branch was already shown
-            if [ -n "$branch" ] && [ "$branch" != "null" ] && is_branch_seen "$branch"; then
-                continue
+                is_seen_context=1
             fi
         fi
-        
+
+        if [ -n "$branch" ] && [ "$branch" != "null" ] && is_branch_seen "$branch"; then
+            is_seen_context=1
+        fi
+
+        # Skip deduplicated commits unless they introduce an additional ticket
+        if [ "$is_seen_context" -eq 1 ] && [ -z "$extra_commit_ticket" ]; then
+            continue
+        fi
+
         # If we have a branch (from commit or PR), track it
         if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-            # Extract Linear ticket from branch name
-            ticket_id=$(extract_linear_ticket "$branch")
+            ticket_list=$(build_commit_ticket_list "$branch" "$pr_title" "$commit_title" "$message")
             
             # Check if this branch is already in our groups
             found_branch=0
@@ -777,7 +880,7 @@ if [ "$commit_display_count" -gt 0 ]; then
                 [ -z "$group_entry" ] && continue
                 branch_name=$(echo "$group_entry" | cut -d'|' -f1)
                 count=$(echo "$group_entry" | cut -d'|' -f2)
-                existing_ticket=$(echo "$group_entry" | cut -d'|' -f3)
+                existing_tickets=$(echo "$group_entry" | cut -d'|' -f3)
                 existing_pr=$(echo "$group_entry" | cut -d'|' -f4)
                 existing_url=$(echo "$group_entry" | cut -d'|' -f5)
                 
@@ -789,17 +892,15 @@ if [ "$commit_display_count" -gt 0 ]; then
                         existing_pr="$pr_number"
                         existing_url="$pr_url"
                     fi
-                    # Update ticket if we found one and didn't have it before
-                    if [ -n "$ticket_id" ] && [ "$ticket_id" != "null" ] && [ -z "$existing_ticket" ]; then
-                        existing_ticket="$ticket_id"
-                    fi
+                    # Merge tickets discovered from branch/PR/commit context
+                    existing_tickets=$(merge_ticket_lists "$existing_tickets" "$ticket_list")
                 fi
-                NEW_GROUPS+="${branch_name}|${count}|${existing_ticket}|${existing_pr}|${existing_url}#"
+                NEW_GROUPS+="${branch_name}|${count}|${existing_tickets}|${existing_pr}|${existing_url}#"
             done <<< "${BRANCH_GROUPS//\#/$'\n'}"
             
             if [ "$found_branch" -eq 0 ]; then
                 # Add new branch
-                NEW_GROUPS+="${branch}|1|${ticket_id}|${pr_number}|${pr_url}#"
+                NEW_GROUPS+="${branch}|1|${ticket_list}|${pr_number}|${pr_url}#"
             fi
             BRANCH_GROUPS="$NEW_GROUPS"
         else
@@ -816,7 +917,9 @@ if [ "$commit_display_count" -gt 0 ]; then
         
         branch=$(echo "$group_entry" | cut -d'|' -f1)
         count=$(echo "$group_entry" | cut -d'|' -f2)
-        ticket_id=$(echo "$group_entry" | cut -d'|' -f3)
+        ticket_list=$(echo "$group_entry" | cut -d'|' -f3)
+        ticket_id=$(echo "$ticket_list" | cut -d',' -f1)
+        additional_tickets=$(echo "$ticket_list" | cut -d',' -f2-)
         pr_number=$(echo "$group_entry" | cut -d'|' -f4)
         pr_url=$(echo "$group_entry" | cut -d'|' -f5)
         
@@ -845,7 +948,27 @@ if [ "$commit_display_count" -gt 0 ]; then
         if [ "$count" -gt 1 ]; then
             base_msg+=" (${count} commits)"
         fi
-        
+
+        # Add additional ticket links when commit messages reference subtasks
+        if [ -n "$additional_tickets" ] && [ "$additional_tickets" != "$ticket_list" ]; then
+            related_links=""
+            old_ifs="$IFS"
+            IFS=','
+            for related_ticket in $additional_tickets; do
+                [ -z "$related_ticket" ] && continue
+                related_url="https://linear.app/ventrata/issue/${related_ticket}"
+                if [ -n "$related_links" ]; then
+                    related_links="${related_links}, "
+                fi
+                related_links="${related_links}[${related_ticket}](${related_url})"
+            done
+            IFS="$old_ifs"
+
+            if [ -n "$related_links" ]; then
+                base_msg+=" (also: ${related_links})"
+            fi
+        fi
+
         # Add PR reference if available
         if [ -n "$pr_number" ] && [ "$pr_number" != "null" ] && [ "$pr_number" != "" ]; then
             base_msg+=" [PR #${pr_number}](${pr_url})"
