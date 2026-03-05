@@ -190,6 +190,7 @@ get_linear_task_title() {
 
 # Get current user
 CURRENT_USER=$(gh api user --jq '.login')
+CURRENT_USER_NAME=$(gh api user --jq '.name // ""' 2>/dev/null || echo "")
 echo -e "${PURPLE}Current user: ${CURRENT_USER}${NC}"
 
 # Temporary directory for storing results
@@ -560,10 +561,18 @@ for repo in $GITHUB_REPOS; do
                     continue
                 fi
 
-                filtered_commits=$(echo "$commit_payload" | jq --arg user "$CURRENT_USER" --arg repo "$repo" --arg branch "$branch_name" '
+                filtered_commits=$(echo "$commit_payload" | jq \
+                  --arg user_login "$CURRENT_USER" \
+                  --arg user_name "$CURRENT_USER_NAME" \
+                  --arg repo "$repo" \
+                  --arg branch "$branch_name" '
                   [.data.repository.ref.target.history.nodes[]? // empty |
-                   select((.author.user.login // "") == $user or (.author.name // "") == $user) |
-                   . + {repository: $repo, branchName: $branch}]' 2>/dev/null || echo "[]")
+                   select(
+                     (.author.user.login // "") == $user_login or
+                     (.author.name // "") == $user_login or
+                     ($user_name != "" and (.author.name // "") == $user_name)
+                   ) |
+                   . + {repository: $repo, branchName: $branch, source: "daily_commit"}]' 2>/dev/null || echo "[]")
 
                 if [ -n "$filtered_commits" ] && [ "$filtered_commits" != "[]" ]; then
                     jq --argjson new_commits "$filtered_commits" '
@@ -582,6 +591,86 @@ for repo in $GITHUB_REPOS; do
             break
         fi
     done
+done
+
+# 5. Fetch commits from PRs you merged during the report range.
+# This preserves resolution/subtask context when source branches are deleted or commits were authored earlier.
+echo -e "${YELLOW}  - Searching for merged PRs you closed on ${DATE_LABEL}...${NC}"
+echo "[]" > "$TEMP_DIR/merged_authored.json"
+
+MERGED_QUALIFIER="${REPORT_START_DATE}"
+if [ "$REPORT_START_DATE" != "$REPORT_END_DATE" ]; then
+    MERGED_QUALIFIER="${REPORT_START_DATE}..${REPORT_END_DATE}"
+fi
+
+if ! gh search prs ${REPO_FILTER} author:@me is:merged merged:"${MERGED_QUALIFIER}" \
+    --json number,title,url,repository,author \
+    --limit 100 \
+    > "$TEMP_DIR/merged_authored.json"; then
+    echo -e "${YELLOW}    ⚠️  Unable to search merged PRs for ${DATE_LABEL}; continuing without merge fallback.${NC}" >&2
+    echo "[]" > "$TEMP_DIR/merged_authored.json"
+fi
+
+jq -c '.[]' "$TEMP_DIR/merged_authored.json" | while IFS= read -r merged_pr_json; do
+    [ -z "$merged_pr_json" ] && continue
+
+    pr_number=$(echo "$merged_pr_json" | jq -r '.number')
+    repo=$(echo "$merged_pr_json" | jq -r '.repository.nameWithOwner')
+
+    if [ -z "$pr_number" ] || [ "$pr_number" = "null" ] || [ -z "$repo" ] || [ "$repo" = "null" ]; then
+        continue
+    fi
+
+    if ! pr_payload=$(gh pr view "$pr_number" -R "$repo" --json number,title,url,headRefName,commits 2>/dev/null); then
+        echo -e "${YELLOW}    ⚠️  Failed to load merged PR commits for ${repo}#${pr_number}.${NC}" >&2
+        continue
+    fi
+
+    merged_pr_commits=$(echo "$pr_payload" | jq \
+        --arg user_login "$CURRENT_USER" \
+        --arg user_name "$CURRENT_USER_NAME" \
+        --arg repo "$repo" '
+      . as $pr |
+      [($pr.commits // [])[]? |
+       select(
+         ([.authors[]?.login // empty] | index($user_login)) != null or
+         ([.authors[]?.name // empty] | index($user_login)) != null or
+         ($user_name != "" and ([.authors[]?.name // empty] | index($user_name)) != null)
+       ) |
+       {
+         oid: .oid,
+         message: ((.messageHeadline // "") + (if (.messageBody // "") != "" then "\n\n" + (.messageBody // "") else "" end)),
+         authoredDate: .authoredDate,
+         author: {
+           name: (.authors[0].name // ""),
+           email: (.authors[0].email // ""),
+           user: {
+             login: (.authors[0].login // "")
+           }
+         },
+         associatedPullRequests: {
+           nodes: [
+             {
+               number: ($pr.number // 0),
+               title: ($pr.title // ""),
+               url: ($pr.url // ""),
+               headRefName: ($pr.headRefName // "")
+             }
+           ]
+         },
+         repository: $repo,
+         branchName: ($pr.headRefName // ("pr-" + (($pr.number // 0) | tostring))),
+         source: "merged_pr_commit"
+       }
+      ]' 2>/dev/null || echo "[]")
+
+    if [ -n "$merged_pr_commits" ] && [ "$merged_pr_commits" != "[]" ]; then
+        jq --argjson new_commits "$merged_pr_commits" '
+          . as $existing |
+          ($existing + $new_commits) |
+          unique_by(.oid)
+        ' "$TEMP_DIR/commits.json" > "$TEMP_DIR/temp.json" && mv "$TEMP_DIR/temp.json" "$TEMP_DIR/commits.json"
+    fi
 done
 
 # Preserve full commit list for summary statistics before filtering
@@ -798,7 +887,14 @@ if [ "$review_count" -gt 0 ]; then
 fi
 
 # Process commits
-commit_total_count=$(jq 'length' "$TEMP_DIR/commits_all.json")
+commit_total_count=$(jq '[.[] | select((.source // "daily_commit") == "daily_commit")] | length' "$TEMP_DIR/commits_all.json")
+merged_resolution_count=$(jq '
+  [.[] |
+   select((.source // "") == "merged_pr_commit") |
+   (.associatedPullRequests.nodes[0].number // empty)] |
+  unique |
+  length
+' "$TEMP_DIR/commits_all.json")
 commit_display_count=$(jq 'length' "$TEMP_DIR/commits.json")
 if [ "$commit_display_count" -gt 0 ]; then
     # Track if we actually display any commits after deduplication
@@ -807,7 +903,7 @@ if [ "$commit_display_count" -gt 0 ]; then
     
     # First, group commits by branch
     # Using bash 3.x compatible approach (no associative arrays)
-    # Format: branch_name|commit_count|linear_tickets_csv|pr_number|pr_url
+    # Format: branch_name|total_count|daily_count|merged_count|linear_tickets_csv|pr_number|pr_url
     BRANCH_GROUPS=""
     
     # Process commits to group by branch
@@ -831,6 +927,13 @@ if [ "$commit_display_count" -gt 0 ]; then
         message_ticket=""
         extra_commit_ticket=""
         is_seen_context=0
+        commit_source=$(echo "$commit_json" | jq -r '.source // "daily_commit"')
+        daily_increment=1
+        merged_increment=0
+        if [ "$commit_source" = "merged_pr_commit" ]; then
+            daily_increment=0
+            merged_increment=1
+        fi
 
         if [ -n "$pr_data" ] && [ "$pr_data" != "null" ]; then
             pr_number=$(echo "$pr_data" | jq -r '.number')
@@ -880,12 +983,16 @@ if [ "$commit_display_count" -gt 0 ]; then
                 [ -z "$group_entry" ] && continue
                 branch_name=$(echo "$group_entry" | cut -d'|' -f1)
                 count=$(echo "$group_entry" | cut -d'|' -f2)
-                existing_tickets=$(echo "$group_entry" | cut -d'|' -f3)
-                existing_pr=$(echo "$group_entry" | cut -d'|' -f4)
-                existing_url=$(echo "$group_entry" | cut -d'|' -f5)
+                daily_count=$(echo "$group_entry" | cut -d'|' -f3)
+                merged_count=$(echo "$group_entry" | cut -d'|' -f4)
+                existing_tickets=$(echo "$group_entry" | cut -d'|' -f5)
+                existing_pr=$(echo "$group_entry" | cut -d'|' -f6)
+                existing_url=$(echo "$group_entry" | cut -d'|' -f7)
                 
                 if [ "$branch_name" = "$branch" ]; then
                     count=$((count + 1))
+                    daily_count=$((daily_count + daily_increment))
+                    merged_count=$((merged_count + merged_increment))
                     found_branch=1
                     # Keep first PR info if we don't have one
                     if [ -z "$existing_pr" ] || [ "$existing_pr" = "null" ] || [ "$existing_pr" = "" ]; then
@@ -895,12 +1002,12 @@ if [ "$commit_display_count" -gt 0 ]; then
                     # Merge tickets discovered from branch/PR/commit context
                     existing_tickets=$(merge_ticket_lists "$existing_tickets" "$ticket_list")
                 fi
-                NEW_GROUPS+="${branch_name}|${count}|${existing_tickets}|${existing_pr}|${existing_url}#"
+                NEW_GROUPS+="${branch_name}|${count}|${daily_count}|${merged_count}|${existing_tickets}|${existing_pr}|${existing_url}#"
             done <<< "${BRANCH_GROUPS//\#/$'\n'}"
             
             if [ "$found_branch" -eq 0 ]; then
                 # Add new branch
-                NEW_GROUPS+="${branch}|1|${ticket_list}|${pr_number}|${pr_url}#"
+                NEW_GROUPS+="${branch}|1|${daily_increment}|${merged_increment}|${ticket_list}|${pr_number}|${pr_url}#"
             fi
             BRANCH_GROUPS="$NEW_GROUPS"
         else
@@ -917,11 +1024,13 @@ if [ "$commit_display_count" -gt 0 ]; then
         
         branch=$(echo "$group_entry" | cut -d'|' -f1)
         count=$(echo "$group_entry" | cut -d'|' -f2)
-        ticket_list=$(echo "$group_entry" | cut -d'|' -f3)
+        daily_count=$(echo "$group_entry" | cut -d'|' -f3)
+        merged_count=$(echo "$group_entry" | cut -d'|' -f4)
+        ticket_list=$(echo "$group_entry" | cut -d'|' -f5)
         ticket_id=$(echo "$ticket_list" | cut -d',' -f1)
         additional_tickets=$(echo "$ticket_list" | cut -d',' -f2-)
-        pr_number=$(echo "$group_entry" | cut -d'|' -f4)
-        pr_url=$(echo "$group_entry" | cut -d'|' -f5)
+        pr_number=$(echo "$group_entry" | cut -d'|' -f6)
+        pr_url=$(echo "$group_entry" | cut -d'|' -f7)
         
         # Mark branch as seen
         mark_branch_seen "$branch"
@@ -944,9 +1053,14 @@ if [ "$commit_display_count" -gt 0 ]; then
             base_msg="Development on \`${branch}\`"
         fi
         
-        # Add commit count if more than 1
-        if [ "$count" -gt 1 ]; then
-            base_msg+=" (${count} commits)"
+        if [ "$daily_count" -gt 1 ] && [ "$merged_count" -gt 0 ]; then
+            base_msg+=" (${daily_count} commits + ${merged_count} merged-PR commits)"
+        elif [ "$daily_count" -gt 1 ]; then
+            base_msg+=" (${daily_count} commits)"
+        elif [ "$daily_count" -eq 1 ] && [ "$merged_count" -gt 0 ]; then
+            base_msg+=" (1 commit + ${merged_count} merged-PR commits)"
+        elif [ "$daily_count" -eq 0 ] && [ "$merged_count" -gt 0 ]; then
+            base_msg+=" (merged PR with ${merged_count} historical commits)"
         fi
 
         # Add additional ticket links when commit messages reference subtasks
@@ -999,11 +1113,15 @@ if [ -n "$REPORT_CONTENT" ]; then
 fi
 
 # Summary
-total=$((authored_count + review_count + commit_total_count))
+total=$((authored_count + review_count + commit_total_count + merged_resolution_count))
 if [ "$total" -eq 0 ]; then
     echo -e "${YELLOW}No GitHub activity found for ${DATE_LABEL}${NC}"
 else
-    echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_total_count} commits${NC}"
+    if [ "$merged_resolution_count" -gt 0 ]; then
+        echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_total_count} commits, ${merged_resolution_count} merged PR resolutions${NC}"
+    else
+        echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_total_count} commits${NC}"
+    fi
     
     # Show breakdown if we have both reviews and comments
     reviewed_count=$(jq 'length' "$TEMP_DIR/reviewed.json")

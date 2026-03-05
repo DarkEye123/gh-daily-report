@@ -60,19 +60,27 @@ setup_mock_gh() {
 # Parse the command
 if [ "$1" = "api" ] && [ "$2" = "user" ]; then
     if [[ "$*" == *"--jq"* ]]; then
-        echo "testuser"
+        if [[ "$*" == *".name"* ]]; then
+            echo "Test User"
+        else
+            echo "testuser"
+        fi
     else
-        echo '{"login": "testuser"}'
+        echo '{"login": "testuser", "name": "Test User"}'
     fi
     exit 0
 fi
 
 if [ "$1" = "search" ] && [ "$2" = "prs" ]; then
     # Return mock PR data based on the query
-    if [[ "$*" == *"author:@me"* ]]; then
-        cat "$TEST_DATA_DIR/authored-prs.json"
+    if [[ "$*" == *"is:merged"* ]]; then
+        cat "$TEST_DATA_DIR/merged-prs.json"
     elif [[ "$*" == *"reviewed-by:@me"* ]]; then
         cat "$TEST_DATA_DIR/reviewed-prs.json"
+    elif [[ "$*" == *"author:@me"* ]]; then
+        cat "$TEST_DATA_DIR/authored-prs.json"
+    else
+        echo "[]"
     fi
     exit 0
 fi
@@ -99,7 +107,9 @@ fi
 
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
     # Return mock PR view data
-    if [[ "$*" == *"-q"* ]]; then
+    if [[ "$*" == *"--json number,title,url,headRefName,commits"* ]]; then
+        cat "$TEST_DATA_DIR/merged-pr-view.json"
+    elif [[ "$*" == *"-q"* ]]; then
         echo "feature/test-branch"
     else
         echo '{"headRefName": "feature/test-branch"}'
@@ -384,6 +394,22 @@ EOF
   }
 }
 EOF
+
+    # Mock merged PR search response
+    cat > "$TEST_DATA_DIR/merged-prs.json" << 'EOF'
+[]
+EOF
+
+    # Mock merged PR detail response
+    cat > "$TEST_DATA_DIR/merged-pr-view.json" << 'EOF'
+{
+  "number": 0,
+  "title": "",
+  "url": "",
+  "headRefName": "",
+  "commits": []
+}
+EOF
 }
 
 # Test: Run script with deduplication
@@ -433,6 +459,115 @@ test_commit_subtask_ticket_visible() {
     fi
 }
 
+# Test: Include merged PR commit tickets even when branch commit lookup has no matches
+test_merged_pr_commit_fallback_includes_subtasks() {
+    setup_mock_gh
+    create_mock_data
+
+    # Ensure regular daily commit scan is empty.
+    cat > "$TEST_DATA_DIR/authored-prs.json" << 'EOF'
+[]
+EOF
+    cat > "$TEST_DATA_DIR/reviewed-prs.json" << 'EOF'
+[]
+EOF
+    cat > "$TEST_DATA_DIR/branches.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "refs": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": []
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/commits-by-branch.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "ref": {
+        "name": "develop",
+        "target": {
+          "history": {
+            "nodes": []
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+
+    # Provide merged PR data with historical commits that still represent resolved tasks.
+    cat > "$TEST_DATA_DIR/merged-prs.json" << 'EOF'
+[
+  {
+    "number": 300,
+    "title": "feat: merged work",
+    "url": "https://github.com/test/repo/pull/300",
+    "repository": {"nameWithOwner": "test/repo"},
+    "author": {"login": "testuser"},
+    "headRefName": "feature/CHE-300-main"
+  }
+]
+EOF
+    cat > "$TEST_DATA_DIR/merged-pr-view.json" << 'EOF'
+{
+  "number": 300,
+  "title": "feat: merged work",
+  "url": "https://github.com/test/repo/pull/300",
+  "headRefName": "feature/CHE-300-main",
+  "commits": [
+    {
+      "oid": "aaa111",
+      "messageHeadline": "feat: CHE-301 first subtask",
+      "messageBody": "",
+      "authoredDate": "2025-06-30T09:00:00Z",
+      "authors": [
+        {
+          "login": "testuser",
+          "name": "Test User",
+          "email": "test@example.com"
+        }
+      ]
+    },
+    {
+      "oid": "bbb222",
+      "messageHeadline": "fix: CHE-302 second subtask",
+      "messageBody": "",
+      "authoredDate": "2025-06-30T10:00:00Z",
+      "authors": [
+        {
+          "login": "testuser",
+          "name": "Test User",
+          "email": "test@example.com"
+        }
+      ]
+    }
+  ]
+}
+EOF
+
+    # Export test data dir for mock gh to find it
+    export TEST_DATA_DIR
+
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+
+    cleanup_mock_gh
+
+    if [[ "$output" == *"CHE-300"* && "$output" == *"CHE-301"* && "$output" == *"CHE-302"* && "$output" == *"merged PR with 2 historical commits"* && "$output" == *"0 commits, 1 merged PR resolutions"* ]]; then
+        return 0
+    else
+        echo "Expected merged PR fallback to include CHE-300, CHE-301, CHE-302 and merged-PR summary text" >&2
+        return 1
+    fi
+}
+
 # Test: Empty date defaults to previous working day
 test_empty_date_default() {
     local current_day=$(date +%A)
@@ -476,6 +611,7 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 # Deduplication tests
 run_test "PR deduplication across sections" test_deduplication
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
+run_test "Merged PR fallback includes resolved subtasks" test_merged_pr_commit_fallback_includes_subtasks
 
 # Summary
 echo
