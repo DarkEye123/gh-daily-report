@@ -19,7 +19,7 @@ This repository contains a Bash script that builds a daily GitHub activity summa
 - `bash`
 - `gh`
 - `jq`
-- `curl`
+- `curl` when `LINEAR_API_KEY` is set
 - `pbcopy` for clipboard copy on macOS only
 
 The script expects `gh` to already be authenticated:
@@ -76,8 +76,9 @@ Examples:
 - No argument defaults to the previous working day
 - Monday defaults to the previous Friday
 - Sunday also resolves back to Friday for the default previous-working-day calculation
-- If the requested date is Friday, Saturday, or Sunday, the report range expands to start on Friday and include the weekend
+- If the requested date falls on Friday, Saturday, or Sunday, the report range expands to start on Friday and include the weekend
 - Weekend expansion is capped to the current day so the script does not search future dates
+- If the requested weekend date is still in the future, the script keeps the range to the requested day instead of generating an invalid Friday-to-earlier-day range
 
 Examples:
 
