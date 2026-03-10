@@ -12,8 +12,9 @@ The script underwent significant refactoring to add:
 
 1. **Deduplication Logic** - PRs mentioned in upper sections won't repeat in lower sections
 2. **Enhanced Date Handling** - Supports Slovak format (DD-MM-YYYY), "today", "yesterday" keywords
-3. **Working Day Calculations** - Defaults to previous working day, skips weekends
-4. **Comprehensive Test Suite** - With mocked GitHub API responses
+3. **Weekend Range Expansion** - Friday, Saturday, and Sunday reports can expand to a Friday-based range capped to today
+4. **Merged PR Resolution Fallback** - Historical authored commits from merged PRs are preserved when source branches are gone
+5. **Comprehensive Test Suite** - With mocked GitHub API responses
 
 ### Key Implementation Details
 
@@ -30,7 +31,16 @@ The script underwent significant refactoring to add:
 - Supports formats: YYYY-MM-DD, DD-MM-YYYY, "today", "yesterday"
 - Empty input defaults to previous working day
 - Monday defaults to previous Friday
+- Friday/Saturday/Sunday requests can expand to a Friday-based range
+- Expanded weekend ranges are capped to today and guarded against invalid future-date reversal
 - Robust error handling for date command failures
+
+#### Commit and Merge Resolution Handling
+
+- Daily commits are grouped by branch when branch context exists
+- Commit ticket extraction prefers commit text before PR title or branch name
+- Historical authored commits from merged PRs are used as a fallback source for resolved subtasks
+- Commit summaries can still be shown when they introduce additional Linear ticket context
 
 #### Security Considerations
 
@@ -157,8 +167,10 @@ Examples:
 4. Verify clipboard functionality
 5. Check error handling
 6. Test deduplication logic - ensure PRs don't repeat across sections
-7. Test working day calculations (especially Monday → Friday)
-8. Run the test suite: `./test-github-daily-report.sh`
+7. Test working day calculations and weekend range expansion
+8. Test merged PR resolution fallback when source branches are unavailable
+9. Test commit ticket extraction from commit message subtasks
+10. Run the test suite: `./test-github-daily-report.sh`
 
 ### Compatibility Notes
 
@@ -171,7 +183,7 @@ Examples:
 
 - Update README.md when adding features
 - Include examples for new functionality
-- Document any new dependencies
+- Document any new dependencies and whether they are optional or conditional
 - Keep installation instructions current
 
 ## Common Tasks
@@ -201,6 +213,8 @@ Examples:
 4. **Clipboard Output**: Must also implement deduplication in clipboard section
 5. **Test Execution**: Tests may hang if output isn't properly handled in subshells
 6. **Linear API**: Always validate ticket IDs to prevent GraphQL injection
+7. **Weekend Date Ranges**: Friday/Saturday/Sunday inputs may expand to a range instead of staying single-day
+8. **Merged PR History**: Resolved work may come from merged PR commit history even when no same-day branch commits exist
 
 ## Handover Strategy
 
