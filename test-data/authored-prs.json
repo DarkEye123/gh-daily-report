@@ -3,8 +3,8 @@
     "number": 123,
     "title": "feat: add new feature",
     "url": "https://github.com/test/repo/pull/123",
-    "repository": {"nameWithOwner": "test/repo"},
-    "author": {"login": "testuser"},
+    "repository": { "nameWithOwner": "test/repo" },
+    "author": { "login": "testuser" },
     "headRefName": "feature/CHE-123-new-feature",
     "createdAt": "2025-07-01T10:00:00Z"
   },
@@ -12,8 +12,8 @@
     "number": 124,
     "title": "fix: bug fix",
     "url": "https://github.com/test/repo/pull/124",
-    "repository": {"nameWithOwner": "test/repo"},
-    "author": {"login": "testuser"},
+    "repository": { "nameWithOwner": "test/repo" },
+    "author": { "login": "testuser" },
     "headRefName": "fix/bug-fix",
     "createdAt": "2025-07-01T11:00:00Z"
   }

@@ -134,15 +134,19 @@ Typical output:
 
 ```markdown
 ## Daily GitHub Activity Summary
+
 Date: 2025-07-01
 
 ### Opened PRs
+
 - [CHE-123](https://linear.app/ventrata/issue/CHE-123) - feat: add new feature [PR #123](https://github.com/test/repo/pull/123)
 
 ### Code Reviews & Comments
+
 - [PR #125: chore: update deps](https://github.com/test/repo/pull/125) by @otheruser
 
 ### Commits, Merges, Resolutions
+
 - [CHE-1961](https://linear.app/ventrata/issue/CHE-1961) - development on `feature/main-task` (also: [CHE-123](https://linear.app/ventrata/issue/CHE-123)) [PR #124](https://github.com/test/repo/pull/124)
 ```
 

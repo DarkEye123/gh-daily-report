@@ -5,7 +5,7 @@
         "reviews": {
           "nodes": [
             {
-              "author": {"login": "testuser"},
+              "author": { "login": "testuser" },
               "createdAt": "2025-07-01T13:00:00Z"
             }
           ]

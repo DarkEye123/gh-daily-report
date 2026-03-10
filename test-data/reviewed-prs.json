@@ -3,16 +3,16 @@
     "number": 123,
     "title": "feat: add new feature",
     "url": "https://github.com/test/repo/pull/123",
-    "repository": {"nameWithOwner": "test/repo"},
-    "author": {"login": "testuser"},
+    "repository": { "nameWithOwner": "test/repo" },
+    "author": { "login": "testuser" },
     "headRefName": "feature/CHE-123-new-feature"
   },
   {
     "number": 125,
     "title": "chore: update deps",
     "url": "https://github.com/test/repo/pull/125",
-    "repository": {"nameWithOwner": "test/repo"},
-    "author": {"login": "otheruser"},
+    "repository": { "nameWithOwner": "test/repo" },
+    "author": { "login": "otheruser" },
     "headRefName": "chore/update-deps"
   }
 ]
