@@ -1,163 +1,180 @@
 # GitHub Daily Activity Report Generator
 
-This tool generates a daily summary of your GitHub activities (PRs authored, reviewed, commented on, and commits made) with Linear ticket integration.
+This repository contains a Bash script that builds a daily GitHub activity summary from the GitHub CLI. It reports PRs you opened, PRs you reviewed or commented on, and commit or merge-resolution work tied to branches and Linear tickets.
 
-## Features
+## What It Does
 
-- Fetches PRs you authored on a specific date
-- Fetches PRs you formally reviewed (excluding your own)
-- Fetches PRs where you commented without formal review
-- Tracks commits you made on the specified date (even without PRs)
-- Automatically extracts Linear ticket IDs (CHE-XXXX) from branch names and commit messages
-- Fetches Linear task titles when LINEAR_API_KEY is set
-- Formats output with Linear ticket links and task titles
-- Copies formatted report to clipboard (macOS)
-- Color-coded terminal output
-- Deduplicates PRs (shows each PR only once even if you both reviewed and commented)
+- Collects PRs authored by the current authenticated GitHub user
+- Collects PRs where the current user submitted a formal review
+- Collects PRs where the current user only commented
+- Collects commits authored by the current user within the report date range
+- Falls back to merged PR commit history so resolved subtasks still appear after branch cleanup
+- Deduplicates activity across sections so the same PR is not repeated unnecessarily
+- Extracts `CHE-1234` style Linear ticket IDs from branch names, PR titles, commit headlines, and commit bodies
+- Optionally fetches Linear issue titles when `LINEAR_API_KEY` is set
+- Copies the markdown report to the macOS clipboard when `pbcopy` is available
+
+## Requirements
+
+- `bash`
+- `gh`
+- `jq`
+- `curl`
+- `pbcopy` for clipboard copy on macOS only
+
+The script expects `gh` to already be authenticated:
+
+```bash
+gh auth status
+```
 
 ## Installation
 
-1. Make sure you have the GitHub CLI (`gh`) installed and authenticated:
-   ```bash
-   gh auth status
-   ```
-~`
-2. Make the script executable:
-   ```bash
-chmod +x github-daily-report.sh
-   ```
+Make the script executable:
 
-3. (Optional) Add an alias to your shell configuration:
-   ```bash
-   alias daily-report='~/path/to/github-daily-report.sh'
-   ```
+```bash
+chmod +x github-daily-report.sh
+```
+
+Optional shell alias:
+
+```bash
+alias daily-report='/absolute/path/to/github-daily-report.sh'
+```
+
+## Usage
+
+Run with no arguments to generate a report for the previous working day:
+
+```bash
+./github-daily-report.sh
+```
+
+Run for a specific day:
+
+```bash
+./github-daily-report.sh 2025-06-18
+```
+
+Accepted date inputs:
+
+- `YYYY-MM-DD`
+- `DD-MM-YYYY`
+- `today`
+- `yesterday`
+
+Examples:
+
+```bash
+./github-daily-report.sh 18-06-2025
+./github-daily-report.sh today
+./github-daily-report.sh yesterday
+```
+
+## Date Behavior
+
+- No argument defaults to the previous working day
+- Monday defaults to the previous Friday
+- Sunday also resolves back to Friday for the default previous-working-day calculation
+- If the requested date is Friday, Saturday, or Sunday, the report range expands to start on Friday and include the weekend
+- Weekend expansion is capped to the current day so the script does not search future dates
+
+Examples:
+
+- Running with no argument on Monday reports Friday
+- Running with `2026-01-16` on or after Sunday covers `2026-01-16` through `2026-01-18`
+- Running with `2026-01-17` on Saturday covers `2026-01-16` through `2026-01-17`
 
 ## Configuration
 
-The script can be configured using environment variables:
+### `GITHUB_REPOS`
 
-### Repository Filtering
-By default, the script searches only specific repositories to improve performance:
+Space-separated repository list. If unset, the script uses:
+
 - `ventrata/checkout-frontend`
 - `ventrata/web-builder`
 - `ventrata/FE-interview-v1`
 - `ventrata/FE-interview-questions`
 
-To customize the repositories:
+Example:
+
 ```bash
-export GITHUB_REPOS="owner/repo1 owner/repo2 owner/repo3"
+export GITHUB_REPOS="owner/repo1 owner/repo2"
 ./github-daily-report.sh
 ```
 
-### Lookback Period
-The script looks back 3 days by default when searching for reviewed/commented PRs. To change this:
+### `LOOKBACK_DAYS`
+
+How far back to search for candidate reviewed or commented PRs before filtering them to the target date range. Default: `3`.
+
 ```bash
 export LOOKBACK_DAYS=7
-./github-daily-report.sh
+./github-daily-report.sh 2025-06-18
 ```
 
-### Linear API Integration
-To fetch actual Linear task titles, set your Linear API key:
+### `LINEAR_API_KEY`
+
+If set, the script queries the Linear GraphQL API for issue titles. Ticket IDs must match `^CHE-[0-9]+$`.
+
 ```bash
 export LINEAR_API_KEY="your-linear-api-key"
 ./github-daily-report.sh
 ```
 
-You can get your Linear API key from: https://linear.app/settings/api
+## Output Structure
 
-## Usage
+The generated markdown report can contain up to three sections:
 
-### Generate today's report:
-```bash
-./github-daily-report.sh
-```
+- `### Opened PRs`
+- `### Code Reviews & Comments`
+- `### Commits, Merges, Resolutions`
 
-### Generate report for a specific date:
-```bash
-./github-daily-report.sh 2025-06-18
-```
-
-### With custom configuration:
-```bash
-GITHUB_REPOS="myorg/repo1 myorg/repo2" LOOKBACK_DAYS=5 ./github-daily-report.sh
-```
-
-## Output Format
-
-The script generates a report in the following format:
+Typical output:
 
 ```markdown
 ## Daily GitHub Activity Summary
-Date: 2025-06-19
+Date: 2025-07-01
 
-### Implementation (Authored PRs)
-- impl: Implement checkout flow [CHE-1234](https://linear.app/ventrata/issue/CHE-1234) - Add new checkout feature [PR #123](https://github.com/org/repo/pull/123)
+### Opened PRs
+- [CHE-123](https://linear.app/ventrata/issue/CHE-123) - feat: add new feature [PR #123](https://github.com/test/repo/pull/123)
 
 ### Code Reviews & Comments
-- code-review: Fix cart calculation [CHE-5678](https://linear.app/ventrata/issue/CHE-5678) - Fix cart total bug [PR #456](https://github.com/org/repo/pull/456)
+- [PR #125: chore: update deps](https://github.com/test/repo/pull/125) by @otheruser
 
-### Commits
-- commit: Update cart logic [CHE-1661](https://linear.app/ventrata/issue/CHE-1661) - fix: revert cart-recovery deletion [PR #2452](https://github.com/org/repo/pull/2452)
+### Commits, Merges, Resolutions
+- [CHE-1961](https://linear.app/ventrata/issue/CHE-1961) - development on `feature/main-task` (also: [CHE-123](https://linear.app/ventrata/issue/CHE-123)) [PR #124](https://github.com/test/repo/pull/124)
 ```
 
-When LINEAR_API_KEY is not set, Linear ticket IDs are shown without titles:
-```markdown
-- impl: [CHE-1234](https://linear.app/ventrata/issue/CHE-1234) - Add new checkout feature [PR #123](https://github.com/org/repo/pull/123)
+When Linear titles are available, the ticket portion is prefixed with the Linear issue title instead of only the ticket ID.
+
+## Deduplication Rules
+
+- PRs shown under `Opened PRs` are not repeated under `Code Reviews & Comments`
+- Branch-linked commit summaries are skipped when that same branch or PR context already appeared earlier
+- Commit entries are still kept when a commit message introduces an additional Linear ticket not already represented by the PR or branch
+
+## Commit and Merge Resolution Behavior
+
+The commits section is branch-oriented rather than commit-oriented when branch context exists.
+
+- Daily commits are grouped by branch
+- Associated PR information is attached when available
+- Multiple discovered Linear tickets are merged into a single branch summary
+- If a merged PR contains historical commits authored by you, those commits can still appear as a "merged PR resolution" even if they were not authored on the target date and even if the source branch is gone
+
+This fallback is what preserves resolved subtasks from merged work.
+
+## Testing
+
+Run the test suite with:
+
+```bash
+./test-github-daily-report.sh
 ```
 
-## How It Works
+## Notes
 
-1. **Activity Discovery**: Uses GitHub's search API and GraphQL to find:
-   - PRs created by you on the specified date
-   - PRs where you submitted formal reviews
-   - PRs where you only left comments (without formal review)
-   - Commits you made on the specified date across all branches
-   - Automatically deduplicates PRs where you both reviewed and commented
-
-2. **Linear Integration**: 
-   - Extracts Linear ticket IDs from PR branch names and commit messages (format: `CHE-XXXX`)
-   - Fetches actual task titles from Linear API when LINEAR_API_KEY is set
-   - Generates Linear issue URLs automatically
-   - Falls back to showing just ticket ID if no API key is provided
-
-3. **Output**:
-   - Displays color-coded report in terminal
-   - Shows breakdown of formal reviews vs comment-only interactions
-   - Groups commits by their associated PRs
-   - Automatically copies markdown-formatted report to clipboard (macOS)
-
-## Customization
-
-### Adding Linear Ticket Titles
-
-The script can fetch actual Linear task titles by setting the LINEAR_API_KEY environment variable. This will show the full task title alongside the ticket ID in the report.
-
-### Extending for Other Issue Trackers
-
-The script can be adapted for other issue tracking systems by:
-1. Modifying the `extract_linear_ticket()` function regex pattern
-2. Updating the URL generation in the `process_pr()` function
-3. Adapting the `get_linear_title()` function for your issue tracker's API
-
-## Requirements
-
-- `gh` (GitHub CLI) - authenticated with appropriate permissions
-- `jq` - for JSON processing
-- `bash` - shell environment
-- `pbcopy` (optional) - for clipboard support on macOS
-
-## Troubleshooting
-
-1. **No PRs found**: Check the date format (YYYY-MM-DD) and ensure you have activity on that date
-2. **Authentication errors**: Run `gh auth status` and re-authenticate if needed
-3. **Missing branch names**: Some older PRs might not have branch information available
-
-## Future Enhancements
-
-- [x] Direct Linear API integration for fetching ticket titles
-- [x] Track commits made on the specified date
-- [ ] Support for date ranges
-- [ ] Export to different formats (JSON, CSV)
-- [ ] Support for multiple issue tracker patterns
-- [ ] Cross-platform clipboard support
-- [ ] Cache Linear ticket titles to reduce API calls
+- The script uses `gh api user` to identify the current GitHub user
+- There is no built-in `--help` flag
+- Clipboard copy happens only when `pbcopy` is installed and the report is non-empty
+- Linear links are generated against `https://linear.app/ventrata/issue/<ticket-id>`
