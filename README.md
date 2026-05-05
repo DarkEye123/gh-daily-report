@@ -152,6 +152,13 @@ Date: 2025-07-01
 
 When Linear titles are available, the ticket portion is prefixed with the Linear issue title instead of only the ticket ID.
 
+## Slack Formatting
+
+The report is copied as markdown so it can be pasted into Slack. If Slack does not automatically offer to apply formatting after paste, use Slack's markdown formatting shortcut while the pasted message is focused:
+
+- macOS: `Cmd` + `Shift` + `F`
+- Windows/Linux: `Ctrl` + `Shift` + `F`
+
 ## Deduplication Rules
 
 - PRs shown under `Opened PRs` are not repeated under `Code Reviews & Comments`
