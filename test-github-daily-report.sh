@@ -87,7 +87,9 @@ fi
 
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
     # Return appropriate mock data based on the query
-    if [[ "$*" == *".data.search.nodes"* ]]; then
+    if [[ "$*" == *"mergedBy"* ]]; then
+        cat "$TEST_DATA_DIR/merged-pr-search-graphql.json"
+    elif [[ "$*" == *".data.search.nodes"* ]]; then
         echo "[]"
     elif [[ "$*" == *"timelineItems"* ]]; then
         cat "$TEST_DATA_DIR/timeline-items.json"
@@ -121,6 +123,12 @@ fi
 echo '[]'
 EOF
     chmod +x "$MOCK_DIR/gh"
+
+    cat > "$MOCK_DIR/pbcopy" << 'EOF'
+#!/bin/bash
+cat > "$TEST_DATA_DIR/clipboard.txt"
+EOF
+    chmod +x "$MOCK_DIR/pbcopy"
 }
 
 # Function to clean up mock
@@ -400,6 +408,17 @@ EOF
 []
 EOF
 
+    # Mock merged PR GraphQL search response
+    cat > "$TEST_DATA_DIR/merged-pr-search-graphql.json" << 'EOF'
+{
+  "data": {
+    "search": {
+      "nodes": []
+    }
+  }
+}
+EOF
+
     # Mock merged PR detail response
     cat > "$TEST_DATA_DIR/merged-pr-view.json" << 'EOF'
 {
@@ -459,6 +478,31 @@ test_commit_subtask_ticket_visible() {
     fi
 }
 
+# Test: Clipboard output keeps Slack paste-friendly formatting
+test_clipboard_uses_slack_format() {
+    setup_mock_gh
+    create_mock_data
+
+    export TEST_DATA_DIR
+
+    "${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" >/dev/null 2>&1 || true
+    local clipboard_content=$(cat "$TEST_DATA_DIR/clipboard.txt")
+
+    cleanup_mock_gh
+
+    if [[ "$clipboard_content" == *"Opened PRs:"* ]] &&
+       [[ "$clipboard_content" == *"•"* ]] &&
+       [[ "$clipboard_content" == *"CHE-1961 (https://linear.app/ventrata/issue/CHE-1961)"* ]] &&
+       [[ "$clipboard_content" != *"###"* ]] &&
+       [[ "$clipboard_content" != *"[PR #"* ]] &&
+       [[ "$clipboard_content" != *"]("* ]]; then
+        return 0
+    else
+        echo "Expected clipboard output to use Slack paste-friendly plain URL formatting" >&2
+        return 1
+    fi
+}
+
 # Test: Include merged PR commit tickets even when branch commit lookup has no matches
 test_merged_pr_commit_fallback_includes_subtasks() {
     setup_mock_gh
@@ -504,17 +548,24 @@ EOF
 EOF
 
     # Provide merged PR data with historical commits that still represent resolved tasks.
-    cat > "$TEST_DATA_DIR/merged-prs.json" << 'EOF'
-[
-  {
-    "number": 300,
-    "title": "feat: merged work",
-    "url": "https://github.com/test/repo/pull/300",
-    "repository": {"nameWithOwner": "test/repo"},
-    "author": {"login": "testuser"},
-    "headRefName": "feature/CHE-300-main"
+    cat > "$TEST_DATA_DIR/merged-pr-search-graphql.json" << 'EOF'
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 300,
+          "title": "feat: merged work",
+          "url": "https://github.com/test/repo/pull/300",
+          "repository": {"nameWithOwner": "test/repo"},
+          "author": {"login": "testuser"},
+          "headRefName": "feature/CHE-300-main",
+          "mergedBy": {"login": "testuser"}
+        }
+      ]
+    }
   }
-]
+}
 EOF
     cat > "$TEST_DATA_DIR/merged-pr-view.json" << 'EOF'
 {
@@ -553,7 +604,6 @@ EOF
 }
 EOF
 
-    # Export test data dir for mock gh to find it
     export TEST_DATA_DIR
 
     local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
@@ -564,6 +614,105 @@ EOF
         return 0
     else
         echo "Expected merged PR fallback to include CHE-300, CHE-301, CHE-302 and merged-PR summary text" >&2
+        return 1
+    fi
+}
+
+# Test: Include merged PRs you merged even when authored by someone else
+test_merged_by_user_includes_foreign_authored_pr() {
+    setup_mock_gh
+    create_mock_data
+
+    cat > "$TEST_DATA_DIR/authored-prs.json" << 'EOF'
+[]
+EOF
+    cat > "$TEST_DATA_DIR/reviewed-prs.json" << 'EOF'
+[]
+EOF
+    cat > "$TEST_DATA_DIR/branches.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "refs": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": []
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/commits-by-branch.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "ref": {
+        "name": "develop",
+        "target": {
+          "history": {
+            "nodes": []
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/merged-pr-search-graphql.json" << 'EOF'
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 3277,
+          "title": "Fix widget closing when resuming checkout from a specific page",
+          "url": "https://github.com/test/repo/pull/3277",
+          "repository": {"nameWithOwner": "test/repo"},
+          "author": {"login": "ollym"},
+          "headRefName": "fix-widget-closing",
+          "mergedBy": {"login": "testuser"}
+        }
+      ]
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/merged-pr-view.json" << 'EOF'
+{
+  "number": 3277,
+  "title": "Fix widget closing when resuming checkout from a specific page",
+  "url": "https://github.com/test/repo/pull/3277",
+  "headRefName": "fix-widget-closing",
+  "commits": [
+    {
+      "oid": "91b7f44",
+      "messageHeadline": "making QA happy again",
+      "messageBody": "",
+      "authoredDate": "2025-07-01T09:00:00Z",
+      "authors": [
+        {
+          "login": "testuser",
+          "name": "Test User",
+          "email": "test@example.com"
+        }
+      ]
+    }
+  ]
+}
+EOF
+
+    export TEST_DATA_DIR
+
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+
+    cleanup_mock_gh
+
+    if [[ "$output" == *"fix-widget-closing"* && "$output" == *"PR #3277"* && "$output" == *"0 commits, 1 merged PR resolutions"* ]]; then
+        return 0
+    else
+        echo "Expected merged-by fallback to include PR #3277 from a different author" >&2
         return 1
     fi
 }
@@ -611,7 +760,9 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 # Deduplication tests
 run_test "PR deduplication across sections" test_deduplication
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
+run_test "Clipboard uses Slack paste-friendly formatting" test_clipboard_uses_slack_format
 run_test "Merged PR fallback includes resolved subtasks" test_merged_pr_commit_fallback_includes_subtasks
+run_test "Merged-by fallback includes foreign-authored PRs" test_merged_by_user_includes_foreign_authored_pr
 
 # Summary
 echo
