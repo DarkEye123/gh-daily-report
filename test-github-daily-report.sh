@@ -478,8 +478,8 @@ test_commit_subtask_ticket_visible() {
     fi
 }
 
-# Test: Clipboard output keeps Slack paste-friendly formatting
-test_clipboard_uses_slack_format() {
+# Test: Clipboard output keeps Markdown syntax for Slack paste conversion
+test_clipboard_uses_markdown_format() {
     setup_mock_gh
     create_mock_data
 
@@ -490,15 +490,15 @@ test_clipboard_uses_slack_format() {
 
     cleanup_mock_gh
 
-    if [[ "$clipboard_content" == *"Opened PRs:"* ]] &&
-       [[ "$clipboard_content" == *"•"* ]] &&
-       [[ "$clipboard_content" == *"CHE-1961 (https://linear.app/ventrata/issue/CHE-1961)"* ]] &&
-       [[ "$clipboard_content" != *"###"* ]] &&
-       [[ "$clipboard_content" != *"[PR #"* ]] &&
-       [[ "$clipboard_content" != *"]("* ]]; then
+    if [[ "$clipboard_content" == *"### Opened PRs"* ]] &&
+       [[ "$clipboard_content" == *"- "* ]] &&
+       [[ "$clipboard_content" == *"[CHE-1961](https://linear.app/ventrata/issue/CHE-1961)"* ]] &&
+       [[ "$clipboard_content" == *"[PR #"* ]] &&
+       [[ "$clipboard_content" == *"]("* ]] &&
+       [[ "$clipboard_content" != *"•"* ]]; then
         return 0
     else
-        echo "Expected clipboard output to use Slack paste-friendly plain URL formatting" >&2
+        echo "Expected clipboard output to keep Markdown syntax for Slack paste conversion" >&2
         return 1
     fi
 }
@@ -760,7 +760,7 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 # Deduplication tests
 run_test "PR deduplication across sections" test_deduplication
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
-run_test "Clipboard uses Slack paste-friendly formatting" test_clipboard_uses_slack_format
+run_test "Clipboard uses Markdown formatting for Slack conversion" test_clipboard_uses_markdown_format
 run_test "Merged PR fallback includes resolved subtasks" test_merged_pr_commit_fallback_includes_subtasks
 run_test "Merged-by fallback includes foreign-authored PRs" test_merged_by_user_includes_foreign_authored_pr
 

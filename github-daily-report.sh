@@ -847,13 +847,11 @@ echo -e "${GREEN}Date: ${DATE_LABEL}${NC}\n"
 
 # Build the report content once
 REPORT_CONTENT=""
-SLACK_CONTENT=""
 
 # Process authored PRs
 authored_count=$(jq 'length' "$TEMP_DIR/authored.json")
 if [ "$authored_count" -gt 0 ]; then
     REPORT_CONTENT+="### Opened PRs\n"
-    SLACK_CONTENT+="Opened PRs:\n"
     
     # Process authored PRs without subshell to preserve variable changes
     authored_lines=$(jq -c '.[]' "$TEMP_DIR/authored.json")
@@ -872,12 +870,9 @@ if [ "$authored_count" -gt 0 ]; then
         fi
         
         output=$(process_pr "$pr_json" "impl")
-        slack_output=$(process_pr "$pr_json" "impl" "slack")
         REPORT_CONTENT+="- $output\n"
-        SLACK_CONTENT+="• $slack_output\n"
     done <<< "$authored_lines"
     REPORT_CONTENT+="\n"
-    SLACK_CONTENT+="\n"
 fi
 
 # Process reviewed/commented PRs
@@ -886,7 +881,6 @@ if [ "$review_count" -gt 0 ]; then
     # Track if we actually display any reviews after deduplication
     review_displayed=0
     REVIEW_SECTION=""
-    SLACK_REVIEW_SECTION=""
     
     # Process reviews without subshell to preserve variable changes
     review_lines=$(jq -c '.[]' "$TEMP_DIR/all_reviews.json")
@@ -911,9 +905,7 @@ if [ "$review_count" -gt 0 ]; then
         fi
         
         output=$(process_pr "$pr_json" "code-review")
-        slack_output=$(process_pr "$pr_json" "code-review" "slack")
         REVIEW_SECTION+="- $output\n"
-        SLACK_REVIEW_SECTION+="• $slack_output\n"
         review_displayed=$((review_displayed + 1))
     done <<< "$review_lines"
     
@@ -922,9 +914,6 @@ if [ "$review_count" -gt 0 ]; then
         REPORT_CONTENT+="### Code Reviews & Comments\n"
         REPORT_CONTENT+="$REVIEW_SECTION"
         REPORT_CONTENT+="\n"
-        SLACK_CONTENT+="Code Reviews & Comments:\n"
-        SLACK_CONTENT+="$SLACK_REVIEW_SECTION"
-        SLACK_CONTENT+="\n"
     fi
 fi
 
@@ -942,7 +931,6 @@ if [ "$commit_display_count" -gt 0 ]; then
     # Track if we actually display any commits after deduplication
     displayed_branches=0
     COMMITS_SECTION=""
-    SLACK_COMMITS_SECTION=""
     
     # First, group commits by branch
     # Using bash 3.x compatible approach (no associative arrays)
@@ -1056,9 +1044,7 @@ if [ "$commit_display_count" -gt 0 ]; then
         else
             # Commit without branch - process individually
             output=$(process_commit "$commit_json")
-            slack_output=$(process_commit "$commit_json" "slack")
             COMMITS_SECTION+="- $output\n"
-            SLACK_COMMITS_SECTION+="• $slack_output\n"
             displayed_branches=$((displayed_branches + 1))
         fi
     done <<< "$commit_lines"
@@ -1091,34 +1077,26 @@ if [ "$commit_display_count" -gt 0 ]; then
             
             if [ -n "$linear_title" ]; then
                 base_msg="${linear_title} [${ticket_id}](${linear_url}) - development on \`${branch}\`"
-                slack_base_msg="${linear_title} ${ticket_id} (${linear_url}) - development on ${branch}"
             else
                 base_msg="[${ticket_id}](${linear_url}) - development on \`${branch}\`"
-                slack_base_msg="${ticket_id} (${linear_url}) - development on ${branch}"
             fi
         else
             base_msg="Development on \`${branch}\`"
-            slack_base_msg="Development on ${branch}"
         fi
         
         if [ "$daily_count" -gt 1 ] && [ "$merged_count" -gt 0 ]; then
             base_msg+=" (${daily_count} commits + ${merged_count} merged-PR commits)"
-            slack_base_msg+=" (${daily_count} commits + ${merged_count} merged-PR commits)"
         elif [ "$daily_count" -gt 1 ]; then
             base_msg+=" (${daily_count} commits)"
-            slack_base_msg+=" (${daily_count} commits)"
         elif [ "$daily_count" -eq 1 ] && [ "$merged_count" -gt 0 ]; then
             base_msg+=" (1 commit + ${merged_count} merged-PR commits)"
-            slack_base_msg+=" (1 commit + ${merged_count} merged-PR commits)"
         elif [ "$daily_count" -eq 0 ] && [ "$merged_count" -gt 0 ]; then
             base_msg+=" (merged PR with ${merged_count} historical commits)"
-            slack_base_msg+=" (merged PR with ${merged_count} historical commits)"
         fi
 
         # Add additional ticket links when commit messages reference subtasks
         if [ -n "$additional_tickets" ] && [ "$additional_tickets" != "$ticket_list" ]; then
             related_links=""
-            slack_related_links=""
             old_ifs="$IFS"
             IFS=','
             for related_ticket in $additional_tickets; do
@@ -1126,27 +1104,22 @@ if [ "$commit_display_count" -gt 0 ]; then
                 related_url="https://linear.app/ventrata/issue/${related_ticket}"
                 if [ -n "$related_links" ]; then
                     related_links="${related_links}, "
-                    slack_related_links="${slack_related_links}, "
                 fi
                 related_links="${related_links}[${related_ticket}](${related_url})"
-                slack_related_links="${slack_related_links}${related_ticket} (${related_url})"
             done
             IFS="$old_ifs"
 
             if [ -n "$related_links" ]; then
                 base_msg+=" (also: ${related_links})"
-                slack_base_msg+=" (also: ${slack_related_links})"
             fi
         fi
 
         # Add PR reference if available
         if [ -n "$pr_number" ] && [ "$pr_number" != "null" ] && [ "$pr_number" != "" ]; then
             base_msg+=" [PR #${pr_number}](${pr_url})"
-            slack_base_msg+=" PR #${pr_number} (${pr_url})"
         fi
         
         COMMITS_SECTION+="- ${base_msg}\n"
-        SLACK_COMMITS_SECTION+="• ${slack_base_msg}\n"
         displayed_branches=$((displayed_branches + 1))
     done <<< "${BRANCH_GROUPS//\#/$'\n'}"
     
@@ -1155,9 +1128,6 @@ if [ "$commit_display_count" -gt 0 ]; then
         REPORT_CONTENT+="### Commits, Merges, Resolutions\n"
         REPORT_CONTENT+="$COMMITS_SECTION"
         REPORT_CONTENT+="\n"
-        SLACK_CONTENT+="Commits, Merges, Resolutions:\n"
-        SLACK_CONTENT+="$SLACK_COMMITS_SECTION"
-        SLACK_CONTENT+="\n"
     fi
 fi
 
@@ -1192,8 +1162,8 @@ else
     fi
     
     # Copy to clipboard if available
-    if command -v pbcopy &> /dev/null && [ -n "$SLACK_CONTENT" ]; then
-        echo -n -e "${SLACK_CONTENT%\\n}" | pbcopy
+    if command -v pbcopy &> /dev/null && [ -n "$REPORT_CONTENT" ]; then
+        echo -n -e "${REPORT_CONTENT%\\n}" | pbcopy
         echo -e "\n${YELLOW}✓ Report copied to clipboard!${NC}"
     fi
 fi
