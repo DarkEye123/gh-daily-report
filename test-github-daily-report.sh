@@ -87,6 +87,15 @@ fi
 
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
     # Return appropriate mock data based on the query
+    repo_name=""
+    for arg in "$@"; do
+        case "$arg" in
+            name=*)
+                repo_name="${arg#name=}"
+                ;;
+        esac
+    done
+
     if [[ "$*" == *"mergedBy"* ]]; then
         cat "$TEST_DATA_DIR/merged-pr-search-graphql.json"
     elif [[ "$*" == *".data.search.nodes"* ]]; then
@@ -98,9 +107,17 @@ if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
     elif [[ "$*" == *"type: ISSUE"* ]]; then
         cat "$TEST_DATA_DIR/comment-search.json"
     elif [[ "$*" == *"refs(refPrefix: \"refs/heads/\""* ]]; then
-        cat "$TEST_DATA_DIR/branches.json"
+        if [ -n "$repo_name" ] && [ -f "$TEST_DATA_DIR/branches-${repo_name}.json" ]; then
+            cat "$TEST_DATA_DIR/branches-${repo_name}.json"
+        else
+            cat "$TEST_DATA_DIR/branches.json"
+        fi
     elif [[ "$*" == *"history(first: 50"* ]]; then
-        cat "$TEST_DATA_DIR/commits-by-branch.json"
+        if [ -n "$repo_name" ] && [ -f "$TEST_DATA_DIR/commits-by-branch-${repo_name}.json" ]; then
+            cat "$TEST_DATA_DIR/commits-by-branch-${repo_name}.json"
+        else
+            cat "$TEST_DATA_DIR/commits-by-branch.json"
+        fi
     else
         echo '{"data": {}}'
     fi
@@ -503,6 +520,267 @@ test_clipboard_uses_markdown_format() {
     fi
 }
 
+# Test: Branch summaries include repository slug for transparency
+test_branch_summary_includes_repository_slug() {
+    setup_mock_gh
+    create_mock_data
+
+    export TEST_DATA_DIR
+
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+
+    cleanup_mock_gh
+
+    if [[ "$output" == *"development in \`checkout-frontend\` on \`feature/main-task\`"* ]]; then
+        return 0
+    else
+        echo "Expected commit branch summary to include repository slug" >&2
+        return 1
+    fi
+}
+
+# Test: Same branch names across repositories remain separate summaries
+test_same_branch_name_kept_separate_per_repo() {
+    setup_mock_gh
+    create_mock_data
+
+    cat > "$TEST_DATA_DIR/authored-prs.json" << 'EOF'
+[]
+EOF
+    cat > "$TEST_DATA_DIR/reviewed-prs.json" << 'EOF'
+[]
+EOF
+    cat > "$TEST_DATA_DIR/branches-repo-a.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "refs": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "name": "main",
+            "target": {
+              "__typename": "Commit",
+              "committedDate": "2025-07-01T10:00:00Z"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/branches-repo-b.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "refs": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "name": "main",
+            "target": {
+              "__typename": "Commit",
+              "committedDate": "2025-07-01T11:00:00Z"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/commits-by-branch-repo-a.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "ref": {
+        "name": "main",
+        "target": {
+          "history": {
+            "nodes": [
+              {
+                "oid": "repoa111",
+                "message": "chore: repo-a maintenance",
+                "author": {
+                  "name": "Test User",
+                  "email": "test@example.com",
+                  "user": {"login": "testuser"}
+                },
+                "authoredDate": "2025-07-01T10:00:00Z",
+                "associatedPullRequests": {
+                  "nodes": []
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/commits-by-branch-repo-b.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "ref": {
+        "name": "main",
+        "target": {
+          "history": {
+            "nodes": [
+              {
+                "oid": "repob222",
+                "message": "chore: repo-b maintenance",
+                "author": {
+                  "name": "Test User",
+                  "email": "test@example.com",
+                  "user": {"login": "testuser"}
+                },
+                "authoredDate": "2025-07-01T11:00:00Z",
+                "associatedPullRequests": {
+                  "nodes": []
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+
+    export TEST_DATA_DIR
+    export GITHUB_REPOS="test/repo-a test/repo-b"
+
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+
+    unset GITHUB_REPOS
+    cleanup_mock_gh
+
+    if [[ "$output" == *"Development in \`repo-a\` on \`main\`"* ]] &&
+       [[ "$output" == *"Development in \`repo-b\` on \`main\`"* ]]; then
+        return 0
+    else
+        echo "Expected separate main-branch summaries for repo-a and repo-b" >&2
+        return 1
+    fi
+}
+
+# Test: Seen branch deduplication is repository-aware
+test_pr_seen_branch_does_not_hide_other_repo_branch() {
+    setup_mock_gh
+    create_mock_data
+
+    cat > "$TEST_DATA_DIR/authored-prs.json" << 'EOF'
+[
+  {
+    "number": 201,
+    "title": "docs: update repo-a main",
+    "url": "https://github.com/test/repo-a/pull/201",
+    "repository": {"nameWithOwner": "test/repo-a"},
+    "author": {"login": "testuser"},
+    "headRefName": "main",
+    "createdAt": "2025-07-01T09:00:00Z"
+  }
+]
+EOF
+    cat > "$TEST_DATA_DIR/reviewed-prs.json" << 'EOF'
+[]
+EOF
+    cat > "$TEST_DATA_DIR/branches-repo-a.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "refs": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": []
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/branches-repo-b.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "refs": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "name": "main",
+            "target": {
+              "__typename": "Commit",
+              "committedDate": "2025-07-01T11:00:00Z"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
+    cat > "$TEST_DATA_DIR/commits-by-branch-repo-b.json" << 'EOF'
+{
+  "data": {
+    "repository": {
+      "ref": {
+        "name": "main",
+        "target": {
+          "history": {
+            "nodes": [
+              {
+                "oid": "repob333",
+                "message": "chore: repo-b follow-up",
+                "author": {
+                  "name": "Test User",
+                  "email": "test@example.com",
+                  "user": {"login": "testuser"}
+                },
+                "authoredDate": "2025-07-01T11:00:00Z",
+                "associatedPullRequests": {
+                  "nodes": []
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+
+    export TEST_DATA_DIR
+    export GITHUB_REPOS="test/repo-a test/repo-b"
+
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+
+    unset GITHUB_REPOS
+    cleanup_mock_gh
+
+    if [[ "$output" == *"[PR #201: docs: update repo-a main](https://github.com/test/repo-a/pull/201)"* ]] &&
+       [[ "$output" == *"Development in \`repo-b\` on \`main\`"* ]]; then
+        return 0
+    else
+        echo "Expected repo-b main commit summary to remain visible after repo-a main PR" >&2
+        return 1
+    fi
+}
+
 # Test: Include merged PR commit tickets even when branch commit lookup has no matches
 test_merged_pr_commit_fallback_includes_subtasks() {
     setup_mock_gh
@@ -761,6 +1039,9 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 run_test "PR deduplication across sections" test_deduplication
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
 run_test "Clipboard uses Markdown formatting for Slack conversion" test_clipboard_uses_markdown_format
+run_test "Commit branch summary includes repository slug" test_branch_summary_includes_repository_slug
+run_test "Same branch names stay separate per repository" test_same_branch_name_kept_separate_per_repo
+run_test "Seen branch deduplication is repository-aware" test_pr_seen_branch_does_not_hide_other_repo_branch
 run_test "Merged PR fallback includes resolved subtasks" test_merged_pr_commit_fallback_includes_subtasks
 run_test "Merged-by fallback includes foreign-authored PRs" test_merged_by_user_includes_foreign_authored_pr
 

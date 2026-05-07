@@ -114,6 +114,29 @@ merge_ticket_lists() {
     echo "$merged"
 }
 
+get_repo_slug() {
+    local repo="$1"
+
+    if [ -z "$repo" ] || [ "$repo" = "null" ]; then
+        echo ""
+        return
+    fi
+
+    echo "$repo" | cut -d'/' -f2
+}
+
+build_branch_context_key() {
+    local repo="$1"
+    local branch="$2"
+
+    if [ -z "$repo" ] || [ "$repo" = "null" ] || [ -z "$branch" ] || [ "$branch" = "null" ]; then
+        echo ""
+        return
+    fi
+
+    echo "${repo}__CTX__${branch}"
+}
+
 # Build a unique ticket list from commit context (branch, PR title, commit title, full message)
 build_commit_ticket_list() {
     local branch="$1"
@@ -227,13 +250,13 @@ mark_url_seen() {
 }
 
 is_branch_seen() {
-    local branch="$1"
-    [[ "$SEEN_BRANCHES" == *"|$branch|"* ]]
+    local branch_context="$1"
+    [[ "$SEEN_BRANCHES" == *"|$branch_context|"* ]]
 }
 
 mark_branch_seen() {
-    local branch="$1"
-    SEEN_BRANCHES="${SEEN_BRANCHES}|$branch|"
+    local branch_context="$1"
+    SEEN_BRANCHES="${SEEN_BRANCHES}|$branch_context|"
 }
 
 echo -e "\n${YELLOW}Fetching your GitHub activity...${NC}"
@@ -775,6 +798,7 @@ process_commit() {
     local message=$(echo "$commit_json" | jq -r '.message')
     local oid=$(echo "$commit_json" | jq -r '.oid' | cut -c1-7)
     local repo=$(echo "$commit_json" | jq -r '.repository')
+    local repo_slug=$(get_repo_slug "$repo")
     local pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
     local branch=$(echo "$commit_json" | jq -r '.branchName // ""')
     
@@ -836,7 +860,11 @@ process_commit() {
                 fi
             fi
         else
-            echo "${commit_title} (${oid})"
+            if [ -n "$repo_slug" ]; then
+                echo "${commit_title} in \`${repo_slug}\` (${oid})"
+            else
+                echo "${commit_title} (${oid})"
+            fi
         fi
     fi
 }
@@ -861,12 +889,14 @@ if [ "$authored_count" -gt 0 ]; then
         # Track PR for deduplication
         pr_number=$(echo "$pr_json" | jq -r '.number')
         pr_url=$(echo "$pr_json" | jq -r '.url')
+        repo=$(echo "$pr_json" | jq -r '.repository.nameWithOwner // ""')
         branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
-        
+        branch_context=$(build_branch_context_key "$repo" "$branch")
+
         mark_pr_seen "$pr_number"
         mark_url_seen "$pr_url"
-        if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-            mark_branch_seen "$branch"
+        if [ -n "$branch_context" ]; then
+            mark_branch_seen "$branch_context"
         fi
         
         output=$(process_pr "$pr_json" "impl")
@@ -890,7 +920,9 @@ if [ "$review_count" -gt 0 ]; then
         # Check if this PR was already shown in authored section
         pr_number=$(echo "$pr_json" | jq -r '.number')
         pr_url=$(echo "$pr_json" | jq -r '.url')
+        repo=$(echo "$pr_json" | jq -r '.repository.nameWithOwner // ""')
         branch=$(echo "$pr_json" | jq -r '.headRefName // ""')
+        branch_context=$(build_branch_context_key "$repo" "$branch")
         
         # Skip if already shown
         if is_pr_seen "$pr_number" || is_url_seen "$pr_url"; then
@@ -900,8 +932,8 @@ if [ "$review_count" -gt 0 ]; then
         # Track for next section
         mark_pr_seen "$pr_number"
         mark_url_seen "$pr_url"
-        if [ -n "$branch" ] && [ "$branch" != "null" ]; then
-            mark_branch_seen "$branch"
+        if [ -n "$branch_context" ]; then
+            mark_branch_seen "$branch_context"
         fi
         
         output=$(process_pr "$pr_json" "code-review")
@@ -950,6 +982,7 @@ if [ "$commit_display_count" -gt 0 ]; then
         message=$(echo "$commit_json" | jq -r '.message // ""')
         commit_title=$(echo "$message" | head -1)
         branch=$(echo "$commit_json" | jq -r '.branchName // ""')
+        repo=$(echo "$commit_json" | jq -r '.repository // ""')
         pr_data=$(echo "$commit_json" | jq -r '.associatedPullRequests.nodes[0] // empty')
         pr_title=""
         branch_ticket=""
@@ -977,6 +1010,8 @@ if [ "$commit_display_count" -gt 0 ]; then
             fi
         fi
 
+        branch_context=$(build_branch_context_key "$repo" "$branch")
+
         branch_ticket=$(extract_linear_ticket "$branch")
         pr_title_ticket=$(extract_linear_ticket "$pr_title")
         commit_title_ticket=$(extract_linear_ticket "$commit_title")
@@ -994,7 +1029,7 @@ if [ "$commit_display_count" -gt 0 ]; then
             fi
         fi
 
-        if [ -n "$branch" ] && [ "$branch" != "null" ] && is_branch_seen "$branch"; then
+        if [ -n "$branch_context" ] && is_branch_seen "$branch_context"; then
             is_seen_context=1
         fi
 
@@ -1012,15 +1047,17 @@ if [ "$commit_display_count" -gt 0 ]; then
             NEW_GROUPS=""
             while IFS='#' read -r group_entry; do
                 [ -z "$group_entry" ] && continue
-                branch_name=$(echo "$group_entry" | cut -d'|' -f1)
-                count=$(echo "$group_entry" | cut -d'|' -f2)
-                daily_count=$(echo "$group_entry" | cut -d'|' -f3)
-                merged_count=$(echo "$group_entry" | cut -d'|' -f4)
-                existing_tickets=$(echo "$group_entry" | cut -d'|' -f5)
-                existing_pr=$(echo "$group_entry" | cut -d'|' -f6)
-                existing_url=$(echo "$group_entry" | cut -d'|' -f7)
+                branch_context_name=$(echo "$group_entry" | cut -d'|' -f1)
+                repo_name=$(echo "$group_entry" | cut -d'|' -f2)
+                branch_name=$(echo "$group_entry" | cut -d'|' -f3)
+                count=$(echo "$group_entry" | cut -d'|' -f4)
+                daily_count=$(echo "$group_entry" | cut -d'|' -f5)
+                merged_count=$(echo "$group_entry" | cut -d'|' -f6)
+                existing_tickets=$(echo "$group_entry" | cut -d'|' -f7)
+                existing_pr=$(echo "$group_entry" | cut -d'|' -f8)
+                existing_url=$(echo "$group_entry" | cut -d'|' -f9)
                 
-                if [ "$branch_name" = "$branch" ]; then
+                if [ "$branch_context_name" = "$branch_context" ]; then
                     count=$((count + 1))
                     daily_count=$((daily_count + daily_increment))
                     merged_count=$((merged_count + merged_increment))
@@ -1033,12 +1070,12 @@ if [ "$commit_display_count" -gt 0 ]; then
                     # Merge tickets discovered from branch/PR/commit context
                     existing_tickets=$(merge_ticket_lists "$existing_tickets" "$ticket_list")
                 fi
-                NEW_GROUPS+="${branch_name}|${count}|${daily_count}|${merged_count}|${existing_tickets}|${existing_pr}|${existing_url}#"
+                NEW_GROUPS+="${branch_context_name}|${repo_name}|${branch_name}|${count}|${daily_count}|${merged_count}|${existing_tickets}|${existing_pr}|${existing_url}#"
             done <<< "${BRANCH_GROUPS//\#/$'\n'}"
             
             if [ "$found_branch" -eq 0 ]; then
                 # Add new branch
-                NEW_GROUPS+="${branch}|1|${daily_increment}|${merged_increment}|${ticket_list}|${pr_number}|${pr_url}#"
+                NEW_GROUPS+="${branch_context}|${repo}|${branch}|1|${daily_increment}|${merged_increment}|${ticket_list}|${pr_number}|${pr_url}#"
             fi
             BRANCH_GROUPS="$NEW_GROUPS"
         else
@@ -1053,18 +1090,23 @@ if [ "$commit_display_count" -gt 0 ]; then
     while IFS='#' read -r group_entry; do
         [ -z "$group_entry" ] && continue
         
-        branch=$(echo "$group_entry" | cut -d'|' -f1)
-        count=$(echo "$group_entry" | cut -d'|' -f2)
-        daily_count=$(echo "$group_entry" | cut -d'|' -f3)
-        merged_count=$(echo "$group_entry" | cut -d'|' -f4)
-        ticket_list=$(echo "$group_entry" | cut -d'|' -f5)
+        branch_context=$(echo "$group_entry" | cut -d'|' -f1)
+        repo=$(echo "$group_entry" | cut -d'|' -f2)
+        branch=$(echo "$group_entry" | cut -d'|' -f3)
+        count=$(echo "$group_entry" | cut -d'|' -f4)
+        daily_count=$(echo "$group_entry" | cut -d'|' -f5)
+        merged_count=$(echo "$group_entry" | cut -d'|' -f6)
+        ticket_list=$(echo "$group_entry" | cut -d'|' -f7)
         ticket_id=$(echo "$ticket_list" | cut -d',' -f1)
         additional_tickets=$(echo "$ticket_list" | cut -d',' -f2-)
-        pr_number=$(echo "$group_entry" | cut -d'|' -f6)
-        pr_url=$(echo "$group_entry" | cut -d'|' -f7)
+        pr_number=$(echo "$group_entry" | cut -d'|' -f8)
+        pr_url=$(echo "$group_entry" | cut -d'|' -f9)
+        repo_slug=$(get_repo_slug "$repo")
         
         # Mark branch as seen
-        mark_branch_seen "$branch"
+        if [ -n "$branch_context" ]; then
+            mark_branch_seen "$branch_context"
+        fi
         if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
             mark_pr_seen "$pr_number"
             mark_url_seen "$pr_url"
@@ -1076,12 +1118,12 @@ if [ "$commit_display_count" -gt 0 ]; then
             linear_title=$(get_linear_task_title "$ticket_id" || true)
             
             if [ -n "$linear_title" ]; then
-                base_msg="${linear_title} [${ticket_id}](${linear_url}) - development on \`${branch}\`"
+                base_msg="${linear_title} [${ticket_id}](${linear_url}) - development in \`${repo_slug}\` on \`${branch}\`"
             else
-                base_msg="[${ticket_id}](${linear_url}) - development on \`${branch}\`"
+                base_msg="[${ticket_id}](${linear_url}) - development in \`${repo_slug}\` on \`${branch}\`"
             fi
         else
-            base_msg="Development on \`${branch}\`"
+            base_msg="Development in \`${repo_slug}\` on \`${branch}\`"
         fi
         
         if [ "$daily_count" -gt 1 ] && [ "$merged_count" -gt 0 ]; then
