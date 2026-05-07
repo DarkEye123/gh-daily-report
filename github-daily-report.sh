@@ -51,7 +51,7 @@ echo "================================================"
 # Example: export GITHUB_REPOS="ventrata/checkout-frontend ventrata/web-builder"
 if [ -z "$GITHUB_REPOS" ]; then
     # Default repositories if not specified
-    GITHUB_REPOS="ventrata/checkout-frontend ventrata/web-builder ventrata/FE-interview-v1 ventrata/FE-interview-questions"
+    GITHUB_REPOS="ventrata/checkout-frontend ventrata/web-builder ventrata/FE-interview-v1 ventrata/FE-interview-questions ventrata/frontend-inspector"
 fi
 
 # Lookback period in days (default: 3)
