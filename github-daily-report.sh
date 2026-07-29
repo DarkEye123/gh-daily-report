@@ -730,6 +730,10 @@ done
 # Preserve full commit list for summary statistics before filtering
 cp "$TEMP_DIR/commits.json" "$TEMP_DIR/commits_all.json"
 
+# Keep repository context only when the report covers more than one codebase.
+ACTIVE_REPO_COUNT=$(jq -s '[.[][]? | (.repository.nameWithOwner? // .repository? // empty)] | unique | length' \
+    "$TEMP_DIR/authored.json" "$TEMP_DIR/all_reviews.json" "$TEMP_DIR/commits_all.json")
+
 # Function to process a PR and format the output
 process_pr() {
     local pr_json="$1"
@@ -860,7 +864,7 @@ process_commit() {
                 fi
             fi
         else
-            if [ -n "$repo_slug" ]; then
+            if [ "$ACTIVE_REPO_COUNT" -gt 1 ] && [ -n "$repo_slug" ]; then
                 echo "${commit_title} in \`${repo_slug}\` (${oid})"
             else
                 echo "${commit_title} (${oid})"
@@ -1102,6 +1106,10 @@ if [ "$commit_display_count" -gt 0 ]; then
         pr_number=$(echo "$group_entry" | cut -d'|' -f8)
         pr_url=$(echo "$group_entry" | cut -d'|' -f9)
         repo_slug=$(get_repo_slug "$repo")
+        repo_context=""
+        if [ "$ACTIVE_REPO_COUNT" -gt 1 ] && [ -n "$repo_slug" ]; then
+            repo_context=" in \`${repo_slug}\`"
+        fi
         
         # Mark branch as seen
         if [ -n "$branch_context" ]; then
@@ -1118,12 +1126,12 @@ if [ "$commit_display_count" -gt 0 ]; then
             linear_title=$(get_linear_task_title "$ticket_id" || true)
             
             if [ -n "$linear_title" ]; then
-                base_msg="${linear_title} [${ticket_id}](${linear_url}) - development in \`${repo_slug}\` on \`${branch}\`"
+                base_msg="${linear_title} [${ticket_id}](${linear_url}) - development${repo_context} on \`${branch}\`"
             else
-                base_msg="[${ticket_id}](${linear_url}) - development in \`${repo_slug}\` on \`${branch}\`"
+                base_msg="[${ticket_id}](${linear_url}) - development${repo_context} on \`${branch}\`"
             fi
         else
-            base_msg="Development in \`${repo_slug}\` on \`${branch}\`"
+            base_msg="Development${repo_context} on \`${branch}\`"
         fi
         
         if [ "$daily_count" -gt 1 ] && [ "$merged_count" -gt 0 ]; then
