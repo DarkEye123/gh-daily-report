@@ -146,6 +146,12 @@ EOF
 cat > "$TEST_DATA_DIR/clipboard.txt"
 EOF
     chmod +x "$MOCK_DIR/pbcopy"
+
+    cat > "$MOCK_DIR/curl" << 'EOF'
+#!/bin/bash
+echo '{"data":{"issue":{"title":"Mock Linear issue"}}}'
+EOF
+    chmod +x "$MOCK_DIR/curl"
 }
 
 # Function to clean up mock
@@ -518,6 +524,22 @@ test_clipboard_uses_markdown_linear_links() {
         echo "Expected clipboard output to use Markdown Linear links" >&2
         return 1
     fi
+}
+
+test_linear_ticket_link_includes_title() {
+    setup_mock_gh
+    create_mock_data
+
+    export TEST_DATA_DIR
+    export LINEAR_API_KEY="test-key"
+
+    "${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" >/dev/null 2>&1 || true
+    local clipboard_content=$(cat "$TEST_DATA_DIR/clipboard.txt")
+
+    unset LINEAR_API_KEY
+    cleanup_mock_gh
+
+    [[ "$clipboard_content" == *"[CHE-1961: Mock Linear issue](https://linear.app/ventrata/issue/CHE-1961)"* ]]
 }
 
 # Test: Single-repository reports omit the redundant repository slug
@@ -1042,6 +1064,7 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 run_test "PR deduplication across sections" test_deduplication
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
 run_test "Clipboard uses Markdown Linear links" test_clipboard_uses_markdown_linear_links
+run_test "Linear ticket links include issue titles" test_linear_ticket_link_includes_title
 run_test "Single-repository branch summary omits repository slug" test_single_repository_branch_summary_omits_repository_slug
 run_test "Same branch names stay separate per repository" test_same_branch_name_kept_separate_per_repo
 run_test "Seen branch deduplication is repository-aware" test_pr_seen_branch_does_not_hide_other_repo_branch
