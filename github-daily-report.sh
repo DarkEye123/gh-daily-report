@@ -759,21 +759,21 @@ process_pr() {
     
     if [ -n "$ticket_id" ]; then
         local linear_url="https://linear.app/ventrata/issue/${ticket_id}"
+        local linear_ticket="[${ticket_id}](${linear_url})"
         local linear_title=$(get_linear_task_title "$ticket_id")
         
         if [ -n "$linear_title" ]; then
-            # Format: <linear task title>[linear task link] - <pr title>[pr link]
             if [ "$format" = "slack" ]; then
-                echo "${linear_title} ${ticket_id} (${linear_url}) - ${title} - PR #${number} (${url})"
+                echo "${linear_title} (${linear_ticket}) - ${title} - PR #${number} (${url})"
             else
-                echo "${linear_title} [${ticket_id}](${linear_url}) - ${title} [PR #${number}](${url})"
+                echo "${linear_title} (${linear_ticket}) - ${title} [PR #${number}](${url})"
             fi
         else
             # Fallback if we can't get Linear title
             if [ "$format" = "slack" ]; then
-                echo "${ticket_id} (${linear_url}) - ${title} - PR #${number} (${url})"
+                echo "${linear_ticket} - ${title} - PR #${number} (${url})"
             else
-                echo "[${ticket_id}](${linear_url}) - ${title} [PR #${number}](${url})"
+                echo "${linear_ticket} - ${title} [PR #${number}](${url})"
             fi
         fi
     else
@@ -821,19 +821,20 @@ process_commit() {
         
         if [ -n "$ticket_id" ]; then
             local linear_url="https://linear.app/ventrata/issue/${ticket_id}"
+            local linear_ticket="[${ticket_id}](${linear_url})"
             local linear_title=$(get_linear_task_title "$ticket_id")
             
             if [ -n "$linear_title" ]; then
                 if [ "$format" = "slack" ]; then
-                    echo "${linear_title} ${ticket_id} (${linear_url}) - ${commit_title} - PR #${pr_number} (${pr_url})"
+                    echo "${linear_title} (${linear_ticket}) - ${commit_title} - PR #${pr_number} (${pr_url})"
                 else
-                    echo "${linear_title} [${ticket_id}](${linear_url}) - ${commit_title} [PR #${pr_number}](${pr_url})"
+                    echo "${linear_title} (${linear_ticket}) - ${commit_title} [PR #${pr_number}](${pr_url})"
                 fi
             else
                 if [ "$format" = "slack" ]; then
-                    echo "${ticket_id} (${linear_url}) - ${commit_title} - PR #${pr_number} (${pr_url})"
+                    echo "${linear_ticket} - ${commit_title} - PR #${pr_number} (${pr_url})"
                 else
-                    echo "[${ticket_id}](${linear_url}) - ${commit_title} [PR #${pr_number}](${pr_url})"
+                    echo "${linear_ticket} - ${commit_title} [PR #${pr_number}](${pr_url})"
                 fi
             fi
         else
@@ -848,19 +849,20 @@ process_commit() {
         local ticket_id=$(resolve_commit_ticket "$branch" "" "$commit_title" "$message")
         if [ -n "$ticket_id" ]; then
             local linear_url="https://linear.app/ventrata/issue/${ticket_id}"
+            local linear_ticket="[${ticket_id}](${linear_url})"
             local linear_title=$(get_linear_task_title "$ticket_id")
             
             if [ -n "$linear_title" ]; then
                 if [ "$format" = "slack" ]; then
-                    echo "${linear_title} ${ticket_id} (${linear_url}) - ${commit_title} (${oid})"
+                    echo "${linear_title} (${linear_ticket}) - ${commit_title} (${oid})"
                 else
-                    echo "${linear_title} [${ticket_id}](${linear_url}) - ${commit_title} (${oid})"
+                    echo "${linear_title} (${linear_ticket}) - ${commit_title} (${oid})"
                 fi
             else
                 if [ "$format" = "slack" ]; then
-                    echo "${ticket_id} (${linear_url}) - ${commit_title} (${oid})"
+                    echo "${linear_ticket} - ${commit_title} (${oid})"
                 else
-                    echo "[${ticket_id}](${linear_url}) - ${commit_title} (${oid})"
+                    echo "${linear_ticket} - ${commit_title} (${oid})"
                 fi
             fi
         else
@@ -1123,12 +1125,13 @@ if [ "$commit_display_count" -gt 0 ]; then
         # Format the branch summary
         if [ -n "$ticket_id" ] && [ "$ticket_id" != "null" ]; then
             linear_url="https://linear.app/ventrata/issue/${ticket_id}"
+            linear_ticket="[${ticket_id}](${linear_url})"
             linear_title=$(get_linear_task_title "$ticket_id" || true)
             
             if [ -n "$linear_title" ]; then
-                base_msg="${linear_title} [${ticket_id}](${linear_url}) - development${repo_context} on \`${branch}\`"
+                base_msg="${linear_title} (${linear_ticket}) - development${repo_context} on \`${branch}\`"
             else
-                base_msg="[${ticket_id}](${linear_url}) - development${repo_context} on \`${branch}\`"
+                base_msg="${linear_ticket} - development${repo_context} on \`${branch}\`"
             fi
         else
             base_msg="Development${repo_context} on \`${branch}\`"
@@ -1144,7 +1147,12 @@ if [ "$commit_display_count" -gt 0 ]; then
             base_msg+=" (merged PR with ${merged_count} historical commits)"
         fi
 
-        # Add additional ticket links when commit messages reference subtasks
+        # Add PR reference if available
+        if [ -n "$pr_number" ] && [ "$pr_number" != "null" ] && [ "$pr_number" != "" ]; then
+            base_msg+=" [PR #${pr_number}](${pr_url})"
+        fi
+
+        # Add additional tickets when commit messages reference subtasks
         if [ -n "$additional_tickets" ] && [ "$additional_tickets" != "$ticket_list" ]; then
             related_links=""
             old_ifs="$IFS"
@@ -1160,13 +1168,8 @@ if [ "$commit_display_count" -gt 0 ]; then
             IFS="$old_ifs"
 
             if [ -n "$related_links" ]; then
-                base_msg+=" (also: ${related_links})"
+                base_msg+="\n  related: ${related_links}"
             fi
-        fi
-
-        # Add PR reference if available
-        if [ -n "$pr_number" ] && [ "$pr_number" != "null" ] && [ "$pr_number" != "" ]; then
-            base_msg+=" [PR #${pr_number}](${pr_url})"
         fi
         
         COMMITS_SECTION+="- ${base_msg}\n"
