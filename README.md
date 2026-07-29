@@ -96,6 +96,7 @@ Space-separated repository list. If unset, the script uses:
 - `ventrata/web-builder`
 - `ventrata/FE-interview-v1`
 - `ventrata/FE-interview-questions`
+- `ventrata/frontend-inspector`
 
 Example:
 
