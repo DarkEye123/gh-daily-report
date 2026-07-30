@@ -146,6 +146,12 @@ EOF
 cat > "$TEST_DATA_DIR/clipboard.txt"
 EOF
     chmod +x "$MOCK_DIR/pbcopy"
+
+    cat > "$MOCK_DIR/curl" << 'EOF'
+#!/bin/bash
+echo '{"data":{"issue":{"title":"Mock Linear issue"}}}'
+EOF
+    chmod +x "$MOCK_DIR/curl"
 }
 
 # Function to clean up mock
@@ -495,8 +501,8 @@ test_commit_subtask_ticket_visible() {
     fi
 }
 
-# Test: Clipboard output keeps Markdown syntax for Slack paste conversion
-test_clipboard_uses_markdown_format() {
+# Test: Clipboard output uses Markdown Linear links
+test_clipboard_uses_markdown_linear_links() {
     setup_mock_gh
     create_mock_data
 
@@ -515,9 +521,25 @@ test_clipboard_uses_markdown_format() {
        [[ "$clipboard_content" != *"•"* ]]; then
         return 0
     else
-        echo "Expected clipboard output to keep Markdown syntax for Slack paste conversion" >&2
+        echo "Expected clipboard output to use Markdown Linear links" >&2
         return 1
     fi
+}
+
+test_linear_ticket_link_includes_title() {
+    setup_mock_gh
+    create_mock_data
+
+    export TEST_DATA_DIR
+    export LINEAR_API_KEY="test-key"
+
+    "${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" >/dev/null 2>&1 || true
+    local clipboard_content=$(cat "$TEST_DATA_DIR/clipboard.txt")
+
+    unset LINEAR_API_KEY
+    cleanup_mock_gh
+
+    [[ "$clipboard_content" == *"[CHE-1961: Mock Linear issue](https://linear.app/ventrata/issue/CHE-1961)"* ]]
 }
 
 # Test: Single-repository reports omit the redundant repository slug
@@ -891,10 +913,10 @@ EOF
 
     cleanup_mock_gh
 
-    if [[ "$output" == *"CHE-300"* && "$output" == *"CHE-301"* && "$output" == *"CHE-302"* && "$output" == *"merged PR with 2 historical commits"* && "$output" == *"0 commits, 1 merged PR resolutions"* ]]; then
+    if [[ "$output" == *"[CHE-300](https://linear.app/ventrata/issue/CHE-300)"* && "$output" == *"related: [CHE-301](https://linear.app/ventrata/issue/CHE-301), [CHE-302](https://linear.app/ventrata/issue/CHE-302)"* && "$output" == *"merged PR with 2 historical commits"* && "$output" == *"0 commits, 1 merged PR resolutions"* ]]; then
         return 0
     else
-        echo "Expected merged PR fallback to include CHE-300, CHE-301, CHE-302 and merged-PR summary text" >&2
+        echo "Expected merged PR fallback to include Markdown links and merged-PR summary text" >&2
         return 1
     fi
 }
@@ -1041,7 +1063,8 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 # Deduplication tests
 run_test "PR deduplication across sections" test_deduplication
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
-run_test "Clipboard uses Markdown formatting for Slack conversion" test_clipboard_uses_markdown_format
+run_test "Clipboard uses Markdown Linear links" test_clipboard_uses_markdown_linear_links
+run_test "Linear ticket links include issue titles" test_linear_ticket_link_includes_title
 run_test "Single-repository branch summary omits repository slug" test_single_repository_branch_summary_omits_repository_slug
 run_test "Same branch names stay separate per repository" test_same_branch_name_kept_separate_per_repo
 run_test "Seen branch deduplication is repository-aware" test_pr_seen_branch_does_not_hide_other_repo_branch
