@@ -99,6 +99,7 @@ Examples:
 Space-separated repository list. If unset, the script uses:
 
 - `ventrata/checkout-frontend`
+- `ventrata/checkout-v4`
 - `ventrata/web-builder`
 - `ventrata/FE-interview-v1`
 - `ventrata/FE-interview-questions`
