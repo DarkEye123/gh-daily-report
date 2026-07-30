@@ -11,7 +11,7 @@ This repository contains a Bash script that builds a daily GitHub activity summa
 - Falls back to merged PR commit history so resolved subtasks still appear after branch cleanup
 - Deduplicates activity across sections so the same PR is not repeated unnecessarily
 - Extracts `CHE-1234` style Linear ticket IDs from branch names, PR titles, commit headlines, and commit bodies
-- Optionally fetches Linear issue titles when `LINEAR_API_KEY` is set
+- Outputs raw Linear URLs by default; `--resolve-linear` restores Markdown links and can fetch issue titles
 - Copies the markdown report to the macOS clipboard when `pbcopy` is available
 
 ## Requirements
@@ -19,7 +19,7 @@ This repository contains a Bash script that builds a daily GitHub activity summa
 - `bash`
 - `gh`
 - `jq`
-- `curl` when `LINEAR_API_KEY` is set
+- `curl` when using `--resolve-linear` with `LINEAR_API_KEY`
 - `pbcopy` for clipboard copy on macOS only
 
 The script expects `gh` to already be authenticated:
@@ -54,6 +54,12 @@ Run for a specific day:
 
 ```bash
 ./github-daily-report.sh 2025-06-18
+```
+
+Resolve Linear tickets into the previous Markdown format:
+
+```bash
+./github-daily-report.sh --resolve-linear 2025-06-18
 ```
 
 Accepted date inputs:
@@ -116,11 +122,11 @@ export LOOKBACK_DAYS=7
 
 ### `LINEAR_API_KEY`
 
-If set, the script queries the Linear GraphQL API for issue titles. Ticket IDs must match `^CHE-[0-9]+$`.
+With `--resolve-linear`, the script queries the Linear GraphQL API for issue titles. Without that flag, it emits raw Linear URLs and does not call the Linear API. Ticket IDs must match `^CHE-[0-9]+$`.
 
 ```bash
 export LINEAR_API_KEY="your-linear-api-key"
-./github-daily-report.sh
+./github-daily-report.sh --resolve-linear
 ```
 
 ## Output Structure
@@ -140,7 +146,7 @@ Date: 2025-07-01
 
 ### Opened PRs
 
-- [CHE-123](https://linear.app/ventrata/issue/CHE-123) - feat: add new feature [PR #123](https://github.com/test/repo/pull/123)
+- https://linear.app/ventrata/issue/CHE-123 - feat: add new feature [PR #123](https://github.com/test/repo/pull/123)
 
 ### Code Reviews & Comments
 
@@ -148,10 +154,10 @@ Date: 2025-07-01
 
 ### Commits, Merges, Resolutions
 
-- [CHE-1961](https://linear.app/ventrata/issue/CHE-1961) - development on `feature/main-task` (also: [CHE-123](https://linear.app/ventrata/issue/CHE-123)) [PR #124](https://github.com/test/repo/pull/124)
+- https://linear.app/ventrata/issue/CHE-1961 - development on `feature/main-task` (also: https://linear.app/ventrata/issue/CHE-123) [PR #124](https://github.com/test/repo/pull/124)
 ```
 
-When Linear titles are available, the ticket portion is prefixed with the Linear issue title instead of only the ticket ID.
+Use `--resolve-linear` to restore Markdown ticket links. When `LINEAR_API_KEY` is set, those links include the Linear issue title.
 
 ## Slack Formatting
 
@@ -190,4 +196,4 @@ Run the test suite with:
 - The script uses `gh api user` to identify the current GitHub user
 - There is no built-in `--help` flag
 - Clipboard copy happens only when `pbcopy` is installed and the report is non-empty
-- Linear links are generated against `https://linear.app/ventrata/issue/<ticket-id>`
+- Linear URLs are generated against `https://linear.app/ventrata/issue/<ticket-id>`

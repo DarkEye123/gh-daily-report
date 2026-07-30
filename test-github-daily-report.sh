@@ -149,6 +149,9 @@ EOF
 
     cat > "$MOCK_DIR/curl" << 'EOF'
 #!/bin/bash
+if [ -n "$CURL_CALLS_FILE" ]; then
+    echo "$*" >> "$CURL_CALLS_FILE"
+fi
 echo '{"data":{"issue":{"title":"Mock Linear issue"}}}'
 EOF
     chmod +x "$MOCK_DIR/curl"
@@ -501,27 +504,33 @@ test_commit_subtask_ticket_visible() {
     fi
 }
 
-# Test: Clipboard output uses Markdown Linear links
-test_clipboard_uses_markdown_linear_links() {
+# Test: Clipboard output uses raw Linear URLs without resolving tickets
+test_clipboard_uses_raw_linear_urls() {
     setup_mock_gh
     create_mock_data
 
     export TEST_DATA_DIR
+    export LINEAR_API_KEY="test-key"
+    export CURL_CALLS_FILE="$TEST_DATA_DIR/curl-calls.txt"
 
     "${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" >/dev/null 2>&1 || true
     local clipboard_content=$(cat "$TEST_DATA_DIR/clipboard.txt")
 
+    unset LINEAR_API_KEY
+    unset CURL_CALLS_FILE
     cleanup_mock_gh
 
     if [[ "$clipboard_content" == *"### Opened PRs"* ]] &&
        [[ "$clipboard_content" == *"- "* ]] &&
-       [[ "$clipboard_content" == *"[CHE-1961](https://linear.app/ventrata/issue/CHE-1961)"* ]] &&
+       [[ "$clipboard_content" == *"https://linear.app/ventrata/issue/CHE-1961"* ]] &&
+       [[ "$clipboard_content" != *"[CHE-"* ]] &&
        [[ "$clipboard_content" == *"[PR #"* ]] &&
        [[ "$clipboard_content" == *"]("* ]] &&
-       [[ "$clipboard_content" != *"•"* ]]; then
+       [[ "$clipboard_content" != *"•"* ]] &&
+       [[ ! -e "$TEST_DATA_DIR/curl-calls.txt" ]]; then
         return 0
     else
-        echo "Expected clipboard output to use Markdown Linear links" >&2
+        echo "Expected clipboard output to use raw Linear URLs without API calls" >&2
         return 1
     fi
 }
@@ -533,7 +542,7 @@ test_linear_ticket_link_includes_title() {
     export TEST_DATA_DIR
     export LINEAR_API_KEY="test-key"
 
-    "${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" >/dev/null 2>&1 || true
+    "${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" --resolve-linear >/dev/null 2>&1 || true
     local clipboard_content=$(cat "$TEST_DATA_DIR/clipboard.txt")
 
     unset LINEAR_API_KEY
@@ -909,7 +918,8 @@ EOF
 
     export TEST_DATA_DIR
 
-    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+    unset LINEAR_API_KEY
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" --resolve-linear "2025-07-01" 2>&1 || true)
 
     cleanup_mock_gh
 
@@ -1063,7 +1073,7 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 # Deduplication tests
 run_test "PR deduplication across sections" test_deduplication
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
-run_test "Clipboard uses Markdown Linear links" test_clipboard_uses_markdown_linear_links
+run_test "Clipboard uses raw Linear URLs" test_clipboard_uses_raw_linear_urls
 run_test "Linear ticket links include issue titles" test_linear_ticket_link_includes_title
 run_test "Single-repository branch summary omits repository slug" test_single_repository_branch_summary_omits_repository_slug
 run_test "Same branch names stay separate per repository" test_same_branch_name_kept_separate_per_repo
