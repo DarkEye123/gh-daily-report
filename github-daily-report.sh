@@ -18,8 +18,17 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Parse date argument (default to previous working day)
-RAW_DATE="${1:-}"
+# Parse optional Linear resolution flag and date argument (default to previous working day)
+RESOLVE_LINEAR=false
+RAW_DATE=""
+for argument in "$@"; do
+    if [ "$argument" = "--resolve-linear" ]; then
+        RESOLVE_LINEAR=true
+    elif [ -z "$RAW_DATE" ]; then
+        RAW_DATE="$argument"
+    fi
+done
+
 DATE=$(parse_date "$RAW_DATE")
 if [ $? -ne 0 ]; then
     exit 1
@@ -214,6 +223,11 @@ format_linear_ticket() {
     local ticket_id="$1"
     local linear_url="https://linear.app/ventrata/issue/${ticket_id}"
     local linear_title
+
+    if [ "$RESOLVE_LINEAR" != true ]; then
+        echo "$linear_url"
+        return
+    fi
 
     linear_title=$(get_linear_task_title "$ticket_id")
     if [ -n "$linear_title" ]; then
@@ -1199,7 +1213,7 @@ fi
 echo -e "\n${PURPLE}Tips:${NC}"
 echo -e "  • This version includes PRs where you only left comments (not formal reviews)"
 echo -e "  • Tracks commits you made on the specified date, even without PRs"
-echo -e "  • Set LINEAR_API_KEY to fetch Linear task titles"
+echo -e "  • Use --resolve-linear with LINEAR_API_KEY to fetch Linear task titles"
 echo -e "  • Run without arguments for previous working day: ${BLUE}./$(basename "$0")${NC}"
 echo -e "  • Specify a date: ${BLUE}./$(basename "$0") 2025-06-18${NC} or ${BLUE}./$(basename "$0") 18-06-2025${NC}"
 echo -e "  • Use shortcuts: ${BLUE}./$(basename "$0") today${NC} or ${BLUE}./$(basename "$0") yesterday${NC}"
