@@ -79,7 +79,7 @@ done
 # Function to extract Linear ticket ID from text
 extract_linear_ticket() {
     local text="$1"
-    echo "$text" | grep -oE 'CHE-[0-9]+' | head -1 || true
+    echo "$text" | grep -oE 'CHE(V4)?-[0-9]+' | head -1 || true
 }
 
 # Append ticket to a comma-separated list if not already present
@@ -198,7 +198,7 @@ get_linear_task_title() {
     local ticket_id="$1"
     
     # Validate ticket ID format to prevent injection
-    if ! [[ "$ticket_id" =~ ^CHE-[0-9]+$ ]]; then
+    if ! [[ "$ticket_id" =~ ^CHE(V4)?-[0-9]+$ ]]; then
         return 1
     fi
     
@@ -288,16 +288,26 @@ mark_branch_seen() {
 
 echo -e "\n${YELLOW}Fetching your GitHub activity...${NC}"
 
-# 1. Fetch PRs created today
+# 1. Fetch PRs created during the report range, regardless of current state.
+# GitHub search treats multiple repo qualifiers as an intersection, so search
+# each configured repository separately before combining the results.
 echo -e "${YELLOW}  - Searching for PRs you created on ${DATE_LABEL}...${NC}"
 CREATED_QUALIFIER="${DATE}"
 if [ "$REPORT_START_DATE" != "$REPORT_END_DATE" ]; then
     CREATED_QUALIFIER="${REPORT_START_DATE}..${REPORT_END_DATE}"
 fi
-gh search prs ${REPO_FILTER} author:@me created:"${CREATED_QUALIFIER}" \
-    --json number,title,url,repository,author,createdAt \
-    --limit 100 \
-    > "$TEMP_DIR/authored.json"
+: > "$TEMP_DIR/authored.ndjson"
+for repo in $GITHUB_REPOS; do
+    if ! gh search prs --repo "$repo" --author @me --created "$CREATED_QUALIFIER" \
+        --json number,title,url,repository,author,createdAt \
+        --limit 100 \
+        > "$TEMP_DIR/authored-repo.json"; then
+        echo -e "${YELLOW}    ⚠️  Unable to search PRs in ${repo}; continuing.${NC}" >&2
+        continue
+    fi
+    jq -c '.[]' "$TEMP_DIR/authored-repo.json" >> "$TEMP_DIR/authored.ndjson"
+done
+jq -s 'unique_by(.url)' "$TEMP_DIR/authored.ndjson" > "$TEMP_DIR/authored.json"
 
 # 2. Fetch PRs where you submitted a formal review on the specific date
 echo -e "${YELLOW}  - Searching for PRs you reviewed...${NC}"
@@ -881,7 +891,7 @@ REPORT_CONTENT=""
 # Process authored PRs
 authored_count=$(jq 'length' "$TEMP_DIR/authored.json")
 if [ "$authored_count" -gt 0 ]; then
-    REPORT_CONTENT+="### Opened PRs\n"
+    REPORT_CONTENT+="### Pull Requests Created\n"
     
     # Process authored PRs without subshell to preserve variable changes
     authored_lines=$(jq -c '.[]' "$TEMP_DIR/authored.json")
@@ -1190,9 +1200,9 @@ if [ "$total" -eq 0 ]; then
     echo -e "${YELLOW}No GitHub activity found for ${DATE_LABEL}${NC}"
 else
     if [ "$merged_resolution_count" -gt 0 ]; then
-        echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_total_count} commits, ${merged_resolution_count} merged PR resolutions${NC}"
+        echo -e "${GREEN}Total: ${authored_count} PRs created, ${review_count} PRs reviewed/commented, ${commit_total_count} commits, ${merged_resolution_count} merged PR resolutions${NC}"
     else
-        echo -e "${GREEN}Total: ${authored_count} PRs authored, ${review_count} PRs reviewed/commented, ${commit_total_count} commits${NC}"
+        echo -e "${GREEN}Total: ${authored_count} PRs created, ${review_count} PRs reviewed/commented, ${commit_total_count} commits${NC}"
     fi
     
     # Show breakdown if we have both reviews and comments

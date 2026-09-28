@@ -134,7 +134,7 @@ export LINEAR_API_KEY="your-linear-api-key"
 
 The generated markdown report can contain up to three sections:
 
-- `### Opened PRs`
+- `### Pull Requests Created`
 - `### Code Reviews & Comments`
 - `### Commits, Merges, Resolutions`
 
@@ -145,7 +145,7 @@ Typical output:
 
 Date: 2025-07-01
 
-### Opened PRs
+### Pull Requests Created
 
 - https://linear.app/ventrata/issue/CHE-123 - feat: add new feature [PR #123](https://github.com/test/repo/pull/123)
 
@@ -169,7 +169,7 @@ The report is copied as markdown so it can be pasted into Slack. If Slack does n
 
 ## Deduplication Rules
 
-- PRs shown under `Opened PRs` are not repeated under `Code Reviews & Comments`
+- PRs created in the report range are shown regardless of whether they are open, closed, or merged, and are not repeated under `Code Reviews & Comments`
 - Branch-linked commit summaries are skipped when that same branch or PR context already appeared earlier
 - Commit entries are still kept when a commit message introduces an additional Linear ticket not already represented by the PR or branch
 

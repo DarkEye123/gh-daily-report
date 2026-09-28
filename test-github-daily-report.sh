@@ -77,8 +77,17 @@ if [ "$1" = "search" ] && [ "$2" = "prs" ]; then
         cat "$TEST_DATA_DIR/merged-prs.json"
     elif [[ "$*" == *"reviewed-by:@me"* ]]; then
         cat "$TEST_DATA_DIR/reviewed-prs.json"
-    elif [[ "$*" == *"author:@me"* ]]; then
-        cat "$TEST_DATA_DIR/authored-prs.json"
+    elif [[ "$*" == *"author:@me"* ]] || [[ "$*" == *"--author @me"* ]]; then
+        if [ -n "$AUTHORED_SEARCH_CALLS_FILE" ]; then
+            echo "$*" >> "$AUTHORED_SEARCH_CALLS_FILE"
+        fi
+        if [[ "$*" == *"--repo test/repo-a"* ]] && [ -f "$TEST_DATA_DIR/authored-prs-repo-a.json" ]; then
+            cat "$TEST_DATA_DIR/authored-prs-repo-a.json"
+        elif [[ "$*" == *"--repo test/repo-b"* ]] && [ -f "$TEST_DATA_DIR/authored-prs-repo-b.json" ]; then
+            cat "$TEST_DATA_DIR/authored-prs-repo-b.json"
+        else
+            cat "$TEST_DATA_DIR/authored-prs.json"
+        fi
     else
         echo "[]"
     fi
@@ -402,7 +411,7 @@ EOF
               },
               {
                 "oid": "def789ghi012",
-                "message": "fix: CHE-1961 locale subtask",
+                "message": "fix: CHEV4-1961 locale subtask",
                 "author": {
                   "name": "Test User",
                   "email": "test@example.com",
@@ -470,14 +479,73 @@ test_deduplication() {
     
     cleanup_mock_gh
     
-    # Check that PR #123 appears only once (in Opened PRs, not in Reviews)
+    # Check that PR #123 appears only once (in Pull Requests Created, not in Reviews)
     local count_123=$(echo "$output" | grep -c "PR #123" || true)
     
-    # PR #123 should appear only in the Opened PRs section
+    # PR #123 should appear only in the Pull Requests Created section
     if [ "$count_123" -eq 1 ]; then
         return 0
     else
         echo "Expected PR #123 to appear once, but found $count_123 occurrences" >&2
+        return 1
+    fi
+}
+
+# Test: authored PR searches cover each configured repository and retain all states
+test_authored_prs_are_collected_per_repository() {
+    setup_mock_gh
+    create_mock_data
+
+    cat > "$TEST_DATA_DIR/authored-prs-repo-a.json" << 'EOF'
+[
+  {
+    "number": 301,
+    "title": "feat: merged work",
+    "url": "https://github.com/test/repo-a/pull/301",
+    "repository": {"nameWithOwner": "test/repo-a"},
+    "author": {"login": "testuser"},
+    "headRefName": "feature/merged",
+    "createdAt": "2025-07-01T09:00:00Z",
+    "state": "MERGED"
+  }
+]
+EOF
+    cat > "$TEST_DATA_DIR/authored-prs-repo-b.json" << 'EOF'
+[
+  {
+    "number": 302,
+    "title": "feat: open work",
+    "url": "https://github.com/test/repo-b/pull/302",
+    "repository": {"nameWithOwner": "test/repo-b"},
+    "author": {"login": "testuser"},
+    "headRefName": "feature/open",
+    "createdAt": "2025-07-01T10:00:00Z",
+    "state": "OPEN"
+  }
+]
+EOF
+
+    export TEST_DATA_DIR
+    export GITHUB_REPOS="test/repo-a test/repo-b"
+    export AUTHORED_SEARCH_CALLS_FILE="$TEST_DATA_DIR/authored-search-calls.txt"
+
+    local output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+    local search_calls=$(cat "$AUTHORED_SEARCH_CALLS_FILE")
+
+    rm -f "$TEST_DATA_DIR/authored-prs-repo-a.json" "$TEST_DATA_DIR/authored-prs-repo-b.json"
+    unset GITHUB_REPOS
+    unset AUTHORED_SEARCH_CALLS_FILE
+    cleanup_mock_gh
+
+    if [[ "$output" == *"### Pull Requests Created"* ]] &&
+       [[ "$output" == *"PR #301"* ]] &&
+       [[ "$output" == *"PR #302"* ]] &&
+       [[ "$search_calls" == *"--repo test/repo-a"* ]] &&
+       [[ "$search_calls" == *"--repo test/repo-b"* ]] &&
+       [[ "$search_calls" != *"--state"* ]]; then
+        return 0
+    else
+        echo "Expected per-repository authored PR searches without a state filter" >&2
         return 1
     fi
 }
@@ -495,11 +563,11 @@ test_commit_subtask_ticket_visible() {
 
     cleanup_mock_gh
 
-    # Commit message contains CHE-1961 even though PR/branch do not
-    if [[ "$output" == *"CHE-1961"* ]]; then
+    # Commit message contains CHEV4-1961 even though PR/branch do not
+    if [[ "$output" == *"CHEV4-1961"* ]]; then
         return 0
     else
-        echo "Expected CHE-1961 from commit message to appear in report output" >&2
+        echo "Expected CHEV4-1961 from commit message to appear in report output" >&2
         return 1
     fi
 }
@@ -520,10 +588,10 @@ test_clipboard_uses_raw_linear_urls() {
     unset CURL_CALLS_FILE
     cleanup_mock_gh
 
-    if [[ "$clipboard_content" == *"### Opened PRs"* ]] &&
+    if [[ "$clipboard_content" == *"### Pull Requests Created"* ]] &&
        [[ "$clipboard_content" == *"- "* ]] &&
-       [[ "$clipboard_content" == *"https://linear.app/ventrata/issue/CHE-1961"* ]] &&
-       [[ "$clipboard_content" != *"[CHE-"* ]] &&
+       [[ "$clipboard_content" == *"https://linear.app/ventrata/issue/CHEV4-1961"* ]] &&
+       [[ "$clipboard_content" != *"[CHEV4-"* ]] &&
        [[ "$clipboard_content" == *"[PR #"* ]] &&
        [[ "$clipboard_content" == *"]("* ]] &&
        [[ "$clipboard_content" != *"•"* ]] &&
@@ -548,7 +616,7 @@ test_linear_ticket_link_includes_title() {
     unset LINEAR_API_KEY
     cleanup_mock_gh
 
-    [[ "$clipboard_content" == *"[CHE-1961: Mock Linear issue](https://linear.app/ventrata/issue/CHE-1961)"* ]]
+    [[ "$clipboard_content" == *"[CHEV4-1961: Mock Linear issue](https://linear.app/ventrata/issue/CHEV4-1961)"* ]]
 }
 
 # Test: Single-repository reports omit the redundant repository slug
@@ -1072,6 +1140,7 @@ run_test "Empty date defaults to previous working day" test_empty_date_default
 
 # Deduplication tests
 run_test "PR deduplication across sections" test_deduplication
+run_test "Authored PRs are collected per repository" test_authored_prs_are_collected_per_repository
 run_test "Commit subtask ticket appears from commit message" test_commit_subtask_ticket_visible
 run_test "Clipboard uses raw Linear URLs" test_clipboard_uses_raw_linear_urls
 run_test "Linear ticket links include issue titles" test_linear_ticket_link_includes_title
