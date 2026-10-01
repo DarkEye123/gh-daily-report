@@ -1158,15 +1158,12 @@ if [ "$commit_display_count" -gt 0 ]; then
             IFS=','
             for related_ticket in $additional_tickets; do
                 [ -z "$related_ticket" ] && continue
-                if [ -n "$related_links" ]; then
-                    related_links="${related_links}, "
-                fi
-                related_links="${related_links}$(format_linear_ticket "$related_ticket")"
+                related_links+="\n    - $(format_linear_ticket "$related_ticket")"
             done
             IFS="$old_ifs"
 
             if [ -n "$related_links" ]; then
-                base_msg+="\n  related: ${related_links}"
+                base_msg+="\n  related:${related_links}"
             fi
         fi
         

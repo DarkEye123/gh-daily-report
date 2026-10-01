@@ -988,13 +988,22 @@ EOF
 
     unset LINEAR_API_KEY
     local output=$("${SCRIPT_DIR}/github-daily-report.sh" --resolve-linear "2025-07-01" 2>&1 || true)
+    local resolved_clipboard=$(cat "$TEST_DATA_DIR/clipboard.txt")
+    local expected_related=$'  related:\n    - [CHE-301](https://linear.app/ventrata/issue/CHE-301)\n    - [CHE-302](https://linear.app/ventrata/issue/CHE-302)'
+
+    local raw_output=$("${SCRIPT_DIR}/github-daily-report.sh" "2025-07-01" 2>&1 || true)
+    local raw_clipboard=$(cat "$TEST_DATA_DIR/clipboard.txt")
+    local expected_raw_related=$'  related:\n    - https://linear.app/ventrata/issue/CHE-301\n    - https://linear.app/ventrata/issue/CHE-302'
 
     cleanup_mock_gh
 
-    if [[ "$output" == *"[CHE-300](https://linear.app/ventrata/issue/CHE-300)"* && "$output" == *"related: [CHE-301](https://linear.app/ventrata/issue/CHE-301), [CHE-302](https://linear.app/ventrata/issue/CHE-302)"* && "$output" == *"merged PR with 2 historical commits"* && "$output" == *"0 commits, 1 merged PR resolutions"* ]]; then
+    if [[ "$output" == *"[CHE-300](https://linear.app/ventrata/issue/CHE-300)"* && "$output" == *"$expected_related"* && "$output" == *"merged PR with 2 historical commits"* && "$output" == *"0 commits, 1 merged PR resolutions"* ]] &&
+       [[ "$resolved_clipboard" == *"$expected_related"* ]] &&
+       [[ "$raw_output" == *"$expected_raw_related"* ]] &&
+       [[ "$raw_clipboard" == *"$expected_raw_related"* ]]; then
         return 0
     else
-        echo "Expected merged PR fallback to include Markdown links and merged-PR summary text" >&2
+        echo "Expected merged PR fallback to include related ticket bullets in terminal and clipboard output, and merged-PR summary text" >&2
         return 1
     fi
 }
